@@ -31,6 +31,12 @@ import { SAFE_RPC_METHODS } from '@common/modules/inpage/methods'
 import { metadata } from '@common/modules/provider/metadata'
 import { RequestRes, Web3WalletPermission } from '@common/modules/provider/types'
 import { openInTab } from '@common/utils/links'
+import {
+  buildPq1Capabilities,
+  isEthGetCodeParams,
+  isPq1Key,
+  Pq1AccountCodeResolver
+} from '@web/modules/hardware-wallet/libs/pq1/dappProvider'
 
 import type { TokenResult } from '@ambire-common/libs/portfolio'
 type ProviderRequest = DappProviderRequest & { requestRes: RequestRes }
@@ -121,6 +127,11 @@ export class ProviderController {
     )
   }
 
+  // PQ1 accounts are smart-contract wallets that Ambire's account model
+  // sees as EOAs (imported with `creation: null`), so their `eth_getCode`
+  // answer is resolved by the PQ1 module — see `libs/pq1/dappProvider.ts`.
+  #pq1AccountCodeResolver = new Pq1AccountCodeResolver()
+
   ethRpc = async (request: DappProviderRequest) => {
     const { method, params, session } = request
     const { id } = session
@@ -135,6 +146,14 @@ export class ProviderController {
       throw ethErrors.provider.unauthorized()
     }
     if (!provider) throw ethErrors.rpc.invalidParams('provider not found')
+
+    if (
+      method === 'eth_getCode' &&
+      isEthGetCodeParams(params) &&
+      isPq1Key(this.mainCtrl.keystore.keys, params[0])
+    ) {
+      return this.#pq1AccountCodeResolver.resolve(provider, chainId, params)
+    }
 
     return provider.send(method, params)
   }
@@ -461,6 +480,12 @@ export class ProviderController {
     const state = this.mainCtrl.accounts.accountStates[accountAddr]
     if (!state) {
       throw ethErrors.rpc.invalidParams(`account with address ${accountAddr} does not exist`)
+    }
+
+    // PQ1 wallets batch atomically in one userOp, but `getBaseAccount` sees
+    // them as EOAs — answer from the PQ1 module instead.
+    if (isPq1Key(this.mainCtrl.keystore.keys, accountAddr)) {
+      return buildPq1Capabilities(this.mainCtrl.networks.networks)
     }
 
     const states = await this.mainCtrl.accounts.getOrFetchAccountStates(accountAddr)

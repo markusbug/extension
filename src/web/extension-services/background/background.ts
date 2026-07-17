@@ -74,8 +74,10 @@ import {
 } from '@web/extension-services/messengers'
 import LatticeController from '@web/modules/hardware-wallet/controllers/LatticeController'
 import LedgerController from '@web/modules/hardware-wallet/controllers/LedgerController'
+import PQ1Controller from '@web/modules/hardware-wallet/controllers/PQ1Controller'
 import TrezorController from '@web/modules/hardware-wallet/controllers/TrezorController'
 import LatticeSigner from '@web/modules/hardware-wallet/libs/LatticeSigner'
+import PQ1Signer from '@web/modules/hardware-wallet/libs/PQ1Signer'
 import { providerRequestTransport } from '@web/modules/provider/providerRequestTransport'
 import { isExtensionOverlayPort } from '@web/utils/sidePanel'
 
@@ -207,6 +209,7 @@ let pm: PortMessenger
 let ledgerCtrl: LedgerController
 let trezorCtrl: TrezorController
 let qrCtrl: QrHardwareController
+let pq1Ctrl: PQ1Controller
 let eventEmitterRegistry: EventEmitterRegistryController
 
 // Initialize Sentry early to set up global error handlers during initial script evaluation
@@ -389,6 +392,7 @@ const init = async () => {
   ledgerCtrl = new LedgerController()
   trezorCtrl = new TrezorController(windowManager as UiManager['window'])
   const latticeCtrl = new LatticeController()
+  pq1Ctrl = new PQ1Controller()
 
   // Skip adding custom headers and URL modifications for 3rd party URLs
   // (only internal Ambire APIs need the x-app-* headers and tracking params)
@@ -529,13 +533,15 @@ const init = async () => {
       ledger: LedgerSigner,
       trezor: TrezorSigner,
       lattice: LatticeSigner,
-      qr: QrHardwareSigner
+      qr: QrHardwareSigner,
+      pq1: PQ1Signer
     } as any,
     externalSignerControllers: {
       ledger: ledgerCtrl,
       trezor: trezorCtrl,
       lattice: latticeCtrl,
-      qr: qrCtrl
+      qr: qrCtrl,
+      pq1: pq1Ctrl
     } as any,
     uiManager: {
       window: {
@@ -840,6 +846,7 @@ browser.runtime.onConnect.addListener(async (port: Port) => {
         ledgerCtrl.cleanUp()
         trezorCtrl.cleanUp()
         qrCtrl.signingCleanup()
+        void pq1Ctrl.signingCleanup()
       }
     })
   })
