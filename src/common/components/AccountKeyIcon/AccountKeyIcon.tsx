@@ -5,6 +5,7 @@ import GridPlusIcon from '@common/assets/svg/GridPlusIcon'
 import LedgerBadgeIcon from '@common/assets/svg/LedgerBadgeIcon'
 import NfcIcon from '@common/assets/svg/NfcIcon'
 import NoKeysIcon from '@common/assets/svg/NoKeysIcon'
+import PQ1BadgeIcon from '@common/assets/svg/PQ1BadgeIcon'
 import ReceiveIcon from '@common/assets/svg/ReceiveIcon'
 import SafeIcon, { SAFE_ICON_INLINE_SCALE } from '@common/assets/svg/SafeIcon'
 import SingleKeyIcon from '@common/assets/svg/SingleKeyIcon'
@@ -37,6 +38,7 @@ const AccountKeyIcon = ({
   }
   if (type === 'qr') return <ReceiveIcon {...props} />
   if (type === 'nfc') return <NfcIcon {...props} />
+  if (type === 'pq1') return <PQ1BadgeIcon {...props} />
 
   return <SingleKeyIcon {...props} />
 }

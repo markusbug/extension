@@ -1,3 +1,4 @@
+import EmittableError from '@ambire-common/classes/EmittableError'
 import { MainController } from '@ambire-common/controllers/main/main'
 import { Dapp } from '@ambire-common/interfaces/dapp'
 import { IEventEmitterRegistryController } from '@ambire-common/interfaces/eventEmitter'
@@ -13,6 +14,7 @@ import { browser } from '@web/constants/browserapi'
 import { openPanel } from '@web/extension-services/background/webapi/panel'
 import { MessageMeta, Port, PortMessenger } from '@web/extension-services/messengers'
 import LatticeKeyIterator from '@web/modules/hardware-wallet/libs/latticeKeyIterator'
+import { buildPQ1AccountsToImport } from '@web/modules/hardware-wallet/libs/pq1/importAccounts'
 
 import sessionStorage from '../webapi/sessionStorage'
 import {
@@ -120,6 +122,22 @@ export const handleActions = async (
     }
     case 'MAIN_CONTROLLER_ACCOUNT_PICKER_INIT_QR_WALLET': {
       return await mainCtrl.handleAccountPickerInitQr(QrKeyIterator, params.payload)
+    }
+    case 'MAIN_CONTROLLER_IMPORT_PQ1_ACCOUNTS': {
+      const { accounts, keys } = buildPQ1AccountsToImport(params.entries, params.deviceId)
+      // Keys before accounts, same order as the account picker's import, so
+      // a failure never leaves accounts behind that have no key to sign with.
+      try {
+        await mainCtrl.keystore.addKeysExternallyStored(keys)
+        await mainCtrl.accounts.addAccounts(accounts)
+      } catch (error) {
+        throw new EmittableError({
+          message: "Couldn't add your PQ1 accounts. Please try again.",
+          level: 'major',
+          error: error instanceof Error ? error : new Error(String(error))
+        })
+      }
+      return
     }
     case 'MAIN_CONTROLLER_ACCOUNT_PICKER_INIT_FROM_SAVED_SEED_PHRASE': {
       const keystoreSavedSeed = await mainCtrl.keystore.getSavedSeed(params.id)

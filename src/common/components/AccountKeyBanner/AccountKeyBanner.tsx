@@ -3,6 +3,7 @@ import React from 'react'
 import GridPlusIcon from '@common/assets/svg/GridPlusIcon'
 import LedgerBadgeIcon from '@common/assets/svg/LedgerBadgeIcon'
 import NfcIcon from '@common/assets/svg/NfcIcon'
+import PQ1BadgeIcon from '@common/assets/svg/PQ1BadgeIcon'
 import ReceiveIcon from '@common/assets/svg/ReceiveIcon'
 import SafeIcon, { SAFE_ICON_INLINE_SCALE } from '@common/assets/svg/SafeIcon'
 import SingleKeyIcon from '@common/assets/svg/SingleKeyIcon'
@@ -63,6 +64,13 @@ const AccountKeyBanner = ({ type }: { type: KeyType }) => {
     return (
       <Wrapper text="NFC card">
         <NfcIcon {...iconProps} />
+      </Wrapper>
+    )
+
+  if (type === 'pq1')
+    return (
+      <Wrapper text="PQ1">
+        <PQ1BadgeIcon {...iconProps} />
       </Wrapper>
     )
 
