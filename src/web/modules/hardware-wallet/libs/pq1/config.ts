@@ -205,7 +205,6 @@ export const ENTRY_POINT_V06 = '0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789' as c
  *  still runs older bytecode at a different address (redeploy pending). Must
  *  match firmware PQ_SMART_WALLET_FACTORY. */
 export const FACTORY = '0xe8ce78cd976497447ff8b76c71b59ae42af0d452' as const
-export const FACTORY_CREATE_ACCOUNT_SELECTOR = new Uint8Array([0xf6, 0x18, 0x2a, 0x73])
 
 // sha256("") — used as paymaster_and_data_hash when no paymaster is attached.
 export const SHA256_EMPTY = new Uint8Array([
