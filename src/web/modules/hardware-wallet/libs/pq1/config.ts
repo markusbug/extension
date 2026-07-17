@@ -206,7 +206,6 @@ export const ENTRY_POINT_V06 = '0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789' as c
 // same address on every chain. Live on Base Mainnet (2026-06-12); Base
 // Sepolia redeploy pending. Must match firmware PQ_SMART_WALLET_FACTORY.
 export const FACTORY = '0xe8ce78cd976497447ff8b76c71b59ae42af0d452' as const
-export const FACTORY_CREATE_ACCOUNT_SELECTOR = new Uint8Array([0xf6, 0x18, 0x2a, 0x73])
 // PQSmartWallet slot-authorised execute = executeWithOffchainCount(ownerIndex,
 // newOffchainCount, target, value, bytes). The plain `execute` path is NOT
 // allowed for slot signatures.
