@@ -1,0 +1,36 @@
+// ABI parser for GPv2Settlement.setPreSignature(bytes orderUid, bool signed).
+//
+// Calldata layout (164 bytes):
+//   offset  size  field
+//        0     4  selector      = 0xec6cb13f
+//        4    32  bytes offset  = 0x40
+//       36    32  bool signed   = 0 or 1
+//       68    32  bytes length  = 56
+//      100    64  bytes data    = orderUid (56) + 8 zero pad
+
+import { OrderUid } from './types'
+
+export const SET_PRE_SIGNATURE_CALLDATA_LEN = 164
+export const SET_PRE_SIGNATURE_SELECTOR = new Uint8Array([0xec, 0x6c, 0xb1, 0x3f])
+
+/** Recognise CoW setPreSignature calldata and pull out (uid, signed). Returns
+ *  null when the bytes don't fit the exact 164-byte ABI shape — the firmware
+ *  enforces the same shape, so anything that wouldn't be accepted there is
+ *  not worth proving here. */
+export function decodeSetPreSignature(data: Uint8Array): { uid: OrderUid; signed: boolean } | null {
+  if (data.length !== SET_PRE_SIGNATURE_CALLDATA_LEN) return null
+  for (let i = 0; i < 4; i++) if (data[i] !== SET_PRE_SIGNATURE_SELECTOR[i]) return null
+  // Bytes offset slot at [4..36): 31 zero bytes then 0x40.
+  for (let i = 4; i < 35; i++) if (data[i] !== 0) return null
+  if (data[35] !== 0x40) return null
+  // Bool signed slot at [36..68): 31 zero bytes then 0 or 1.
+  for (let i = 36; i < 67; i++) if (data[i] !== 0) return null
+  if (data[67] !== 0 && data[67] !== 1) return null
+  // Bytes length slot at [68..100): 31 zero bytes then 56.
+  for (let i = 68; i < 99; i++) if (data[i] !== 0) return null
+  if (data[99] !== 56) return null
+  const uidBytes = data.slice(100, 156)
+  // Trailing zero pad at [156..164).
+  for (let i = 156; i < 164; i++) if (data[i] !== 0) return null
+  return { uid: new OrderUid(uidBytes), signed: data[67] === 1 }
+}
