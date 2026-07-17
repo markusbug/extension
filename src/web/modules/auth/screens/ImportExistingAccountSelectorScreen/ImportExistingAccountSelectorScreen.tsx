@@ -146,6 +146,13 @@ const ImportExistingAccountSelectorScreen = () => {
         icon: ReceiveIcon
       },
       {
+        title: 'PQ1 (post-quantum)',
+        onPress: () => {
+          goToNextRoute(WEB_ROUTES.pq1Connect)
+        },
+        icon: ReceiveIcon
+      },
+      {
         title: 'JSON backup file',
         onPress: () => {
           goToNextRoute(WEB_ROUTES.importSmartAccountJson)

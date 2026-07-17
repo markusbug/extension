@@ -87,6 +87,15 @@ type MainControllerAccountPickerInitNfcWalletAction = {
   type: 'MAIN_CONTROLLER_ACCOUNT_PICKER_INIT_NFC_WALLET'
   params: { payload: NfcExportedKey }
 }
+type MainControllerImportPq1AccountsAction = {
+  type: 'MAIN_CONTROLLER_IMPORT_PQ1_ACCOUNTS'
+  params: {
+    /** Pre-fetched by the popup (which owns the WebHID device handle).
+     *  Each item is a (deviceAccountIndex, on-chain wallet address) pair. */
+    entries: Array<{ accountIndex: number; addr: string }>
+    deviceId: string
+  }
+}
 type MainControllerAccountPickerInitFromSavedSeedPhraseAction = {
   type: 'MAIN_CONTROLLER_ACCOUNT_PICKER_INIT_FROM_SAVED_SEED_PHRASE'
   params: { id: string }
@@ -254,6 +263,7 @@ export type Action =
   | SetViewFocusAction
   | MainControllerAccountPickerInitQrWalletAction
   | MainControllerAccountPickerInitNfcWalletAction
+  | MainControllerImportPq1AccountsAction
   | MainControllerAccountPickerInitLatticeAction
   | MainControllerAccountPickerInitTrezorAction
   | MainControllerAccountPickerInitLedgerAction
