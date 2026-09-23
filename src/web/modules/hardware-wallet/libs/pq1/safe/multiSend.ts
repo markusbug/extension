@@ -34,7 +34,8 @@ export const MULTI_SEND_SELECTOR = new Uint8Array([0x8d, 0x80, 0xff, 0x0a])
 export const MULTISEND_CALL_ONLY_ADDRESSES_LC: readonly string[] = [
   '0x40a2accbd92bca938b02010e17a5b8929b49130d', // v1.3.0 canonical
   '0xa1dabef33b3b82c7814b6d82a79e50f4ac44102b', // v1.3.0 eip155
-  '0x9641d764fc13c8b624c04430c7356c1c7c8102e2' // v1.4.1 canonical
+  '0x9641d764fc13c8b624c04430c7356c1c7c8102e2', // v1.4.1 canonical
+  '0xa83c336b20401af773b6219ba5027174338d1836' // v1.5.0 canonical
 ]
 
 /** Firmware decode-loop cap (`MULTISEND_MAX_RECORDS`). The trusted
@@ -106,6 +107,7 @@ export interface MultiSendRecord {
 export type MultiSendRejectBanner =
   | 'msend malformed'
   | 'msend rec op!=0'
+  | 'msend rec to=0'
   | 'msend rec count'
   | 'msend 2+ presign'
 
@@ -177,8 +179,11 @@ export function walkMultiSendRecords(packed: Uint8Array): MultiSendRecord[] | nu
   return records
 }
 
+const ZERO_ADDRESS_LC = '0x0000000000000000000000000000000000000000'
+
 /** Decode + validate the payload's hard rules: strict framing, 1..=
- *  `MULTISEND_MAX_RECORDS` records, every record `operation == 0`.
+ *  `MULTISEND_MAX_RECORDS` records, every record `operation == 0` and
+ *  `to != 0x0`.
  *  Returns the banner string on violation — mirrors the firmware's
  *  `summarize` error mapping. Presign claims are counted selector-level
  *  only (the full 164-byte shape stays in the CoW pipeline, so a
@@ -196,6 +201,9 @@ export function summarizeMultiSend(data: Uint8Array): MultiSendSummary | MultiSe
   for (let i = 0; i < records.length; i++) {
     const r = records[i]!
     if (r.operation !== 0) return 'msend rec op!=0'
+    // MultiSendCallOnly v1.5.0 rewrites `to == 0` to the Safe itself;
+    // the firmware refuses it for every target (`MsError::RecordToZero`).
+    if (r.to === ZERO_ADDRESS_LC) return 'msend rec to=0'
     if (i === MULTISEND_MAX_RECORDS) return 'msend rec count'
     if (isCowPresignClaim(r.to, r.data)) presignRecordIndexes.push(i)
   }
@@ -277,6 +285,8 @@ const MULTISEND_REJECT_FIX: Record<MultiSendRejectBanner, string> = {
     'the multiSend(bytes) calldata is not the canonical Solidity encoding (offset/length/padding/record framing)',
   'msend rec op!=0':
     'a record nests a DELEGATECALL (per-record operation must be 0; MultiSendCallOnly would revert on-chain anyway)',
+  'msend rec to=0':
+    'a record targets the zero address (MultiSendCallOnly v1.5.0 would call the Safe itself) — address the record explicitly',
   'msend rec count': `the batch must contain 1..=${MULTISEND_MAX_RECORDS} records — split it into smaller SafeTxs`,
   'msend 2+ presign':
     'the batch contains two or more CoW setPreSignature records — one zk_v3 trailer can bind only one order per SafeTx'

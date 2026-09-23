@@ -107,7 +107,7 @@ function cowFlowCalldata(): Uint8Array {
 describe('multiSend claim predicate', () => {
   it('fires for every allowlisted target under operation=1', () => {
     const cd = cowFlowCalldata()
-    expect(MULTISEND_CALL_ONLY_ADDRESSES_LC).toHaveLength(3)
+    expect(MULTISEND_CALL_ONLY_ADDRESSES_LC).toHaveLength(4)
     for (const a of MULTISEND_CALL_ONLY_ADDRESSES_LC) {
       expect(isAllowlistedMultiSendCallOnly(a)).toBe(true)
       expect(isMultiSendClaim(1, a, cd)).toBe(true)
@@ -232,6 +232,19 @@ describe('summarize + verdict hard rules', () => {
       kind: 'reject',
       banner: 'msend rec op!=0'
     })
+  })
+
+  it("refuses a record with to=0x0 ('msend rec to=0') — v1.5.0 rewrites it to the Safe", () => {
+    const cd = encodeMs(
+      concat(
+        packRecord(0, TOKEN, 0n, approveCalldata(GPV2_VAULT_RELAYER, 1)),
+        packRecord(0, `0x${'00'.repeat(20)}`, 0n, new Uint8Array([0x0d, 0x58, 0x2f, 0x13]))
+      )
+    )
+    expect(summarizeMultiSend(cd)).toBe('msend rec to=0')
+    for (const a of MULTISEND_CALL_ONLY_ADDRESSES_LC) {
+      expect(multiSendVerdict(1, a, cd)).toEqual({ kind: 'reject', banner: 'msend rec to=0' })
+    }
   })
 
   it("refuses zero records and more than MULTISEND_MAX_RECORDS ('msend rec count')", () => {
