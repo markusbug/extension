@@ -31,6 +31,7 @@
 
 import { sha256 } from 'viem'
 
+import { OFFCHAIN_NAME_BUNDLE_MAX_LEN } from '../config'
 import { concatBytes, u64be } from '../transport/bytes'
 import {
   checkDbSections,
@@ -66,8 +67,9 @@ const SHORT_KEY_TAG = new TextEncoder().encode('pqsigner-name-key-v1')
  *  start at 1) for chain-agnostic labels (`NAMES_WILDCARD_CHAIN_ID`). */
 const WILDCARD_CHAIN_ID = 0n
 
-/** Firmware cap on one assembled kind-8 bundle (`MAX_NAME_BUNDLE_LEN`). */
-export const MAX_NAME_BUNDLE_LEN = 1156
+/** Firmware cap on one assembled kind-8 bundle (`tx/src/names/bundle.rs`
+ *  `MAX_NAME_BUNDLE_LEN` = 8 + 20 + 1 + 32 + 4 + 4 + 32 × 32). */
+export const MAX_NAME_BUNDLE_LEN = OFFCHAIN_NAME_BUNDLE_MAX_LEN
 
 /** `sha256("pqsigner-name-key-v1" || chain_id[8 BE] || address[20])[..16]`
  *  — the on-disk index key, raw bytes. */

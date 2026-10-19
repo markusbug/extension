@@ -23,6 +23,11 @@ import { buildErc7730Eip712Pieces } from '../pq1/erc7730/eip712'
 import { buildErc7730BundleForEip712 } from '../pq1/erc7730/lookup'
 import { PQ1_UNSUPPORTED_NETWORK_MESSAGE, toUserFacingPq1Error } from '../pq1/errors'
 import { bytesToHex0x, hexToBytes } from '../pq1/transport/bytes'
+import {
+  buildStructuredOffchainRequest,
+  structuredCapability
+} from '../pq1/offchain/structuredSign'
+import { classifyStructuredTypedData } from '../pq1/offchain/structuredTypedData'
 import { DeviceError } from '../pq1/transport/hid'
 import type { SignOffchainBundle } from '../pq1/transport/offchain'
 import { personalSignFitsDevice } from '../pq1/transport/personalSignView'
@@ -40,6 +45,16 @@ type PQ1Meta = ExternalKey['meta'] & {
    *  metadata only, same staleness caveat as slotIndex. */
   ownerIndex?: number
 }
+
+/** A Safe / CoW typed-data request whose domain names a different chain
+ *  than the one the request was made on. */
+const STRUCTURED_WRONG_NETWORK_MESSAGE =
+  "This signature request is for a different network than the one you're on. Switch to that network in the app and try again. Nothing was signed."
+
+/** A Safe / CoW typed-data request from an account not yet deployed on
+ *  this network: neither a Safe nor CoW Swap can check its signature. */
+const STRUCTURED_UNDEPLOYED_MESSAGE =
+  "Your PQ1 account isn't set up on this network yet, so a Safe or CoW Swap can't check this signature. Send one transaction from the account on this network first, then try again. Nothing was signed."
 
 const isHexAddress = (v: unknown): v is `0x${string}` =>
   typeof v === 'string' && isAddress(v, { strict: false })
@@ -291,6 +306,36 @@ class PQ1Signer implements KeystoreSignerInterface {
     const viemTypedData = typedData as unknown as TypedDataDefinition
 
     try {
+      // ── Safe SafeTx / CoW order (kinds 4 / 5) ───────────────────
+      // The device shows these natively and re-derives their EIP-712
+      // hash, signing exactly what a raw32 sign of it would. Routed on
+      // the device's capability bit only: once a request is sent this
+      // way, a refusal is final — it is never retried blind.
+      const structured = classifyStructuredTypedData(typedData)
+      if (structured.kind !== 'other') {
+        if (structured.chainId !== BigInt(chainId)) {
+          throw new ExternalSignerError(STRUCTURED_WRONG_NETWORK_MESSAGE, {
+            sendCrashReport: false
+          })
+        }
+        const caps = await this.#withDevice((sdk) => sdk.commands.getCapabilities())
+        if (caps & structuredCapability(structured)) {
+          if (!isDeployed) {
+            throw new ExternalSignerError(STRUCTURED_UNDEPLOYED_MESSAGE, {
+              sendCrashReport: false
+            })
+          }
+          const request = await buildStructuredOffchainRequest(structured)
+          const bundle = await this.#withDevice((sdk) =>
+            sdk.commands.signOffchain({ ...request, ...common })
+          )
+          return this.#toSignature(bundle, ownerIndex)
+        }
+        console.warn(
+          `[pq1] signTypedData: this PQ1's firmware can't show a ${structured.kind} — signing its hash blind`
+        )
+      }
+
       // ── ERC-7730 clear-signing dispatch (kind=2) ────────────────
       // Look up a descriptor by `(chainId, verifyingContract)`. When
       // one exists AND the message uses only static atomic field types
@@ -300,8 +345,9 @@ class PQ1Signer implements KeystoreSignerInterface {
       //
       // Falls back to kind=0 (raw32) on any miss: catalog unavailable,
       // no descriptor for the verifyingContract, dynamic field types,
-      // or trailer assembly failure. The firmware doc § 6.3 explicitly
-      // calls this out as the prescribed fallback.
+      // or trailer assembly failure. That blind fallback (the device
+      // shows a loud BLIND HASH page) is an owner-accepted residual for
+      // typed data the device has no route for (decision 2026-10-19).
       const domain = viemTypedData.domain ?? {}
       const { verifyingContract } = domain
       if (isHexAddress(verifyingContract)) {
@@ -333,8 +379,8 @@ class PQ1Signer implements KeystoreSignerInterface {
         }
       }
 
-      // No descriptor / non-static fields: fall through to raw32 with
-      // the EIP-712 final hash. Device shows the fingerprint page only.
+      // No on-device route: raw32 with the EIP-712 final hash. The
+      // device shows its BLIND HASH warning and the full hash.
       const digestHex = hashTypedData(viemTypedData)
       const bundle = await this.#withDevice((sdk) =>
         sdk.commands.signOffchain({

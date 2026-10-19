@@ -10,11 +10,20 @@ import {
   MAX_ACCOUNT_INDEX,
   MAX_OFFCHAIN_EIP712_ENCODED_DATA_LEN,
   MAX_OFFCHAIN_EIP712_TYPED_LEN,
+  MAX_OFFCHAIN_COW_ORDER_LEN,
   MAX_OFFCHAIN_PERSONAL_SIGN_LEN,
+  MAX_OFFCHAIN_SAFE_TX_LEN,
+  OFFCHAIN_COW_ORDER_TRAILER_MAX_LEN,
+  OFFCHAIN_ERC20_BUNDLE_MAX_LEN,
   OFFCHAIN_FLAG_ACCOUNT_DEPLOYED,
+  OFFCHAIN_KIND_COW_ORDER,
   OFFCHAIN_KIND_EIP712_TYPED,
   OFFCHAIN_KIND_PERSONAL_SIGN,
   OFFCHAIN_KIND_RAW32,
+  OFFCHAIN_KIND_SAFE_TX,
+  OFFCHAIN_MAX_NAME_BUNDLES,
+  OFFCHAIN_NAME_BUNDLE_MAX_LEN,
+  OFFCHAIN_SAFE_V1_MAX_LEN,
   OFFCHAIN_STATUS_INPUT_LEN,
   OFFCHAIN_STATUS_OUTPUT_LAST_USEROP_OFF,
   OFFCHAIN_STATUS_OUTPUT_LEN,
@@ -27,6 +36,8 @@ import {
   SIGN_OFFCHAIN_OUTPUT_LEN_COUNTERFACTUAL,
   SIGN_OFFCHAIN_OUTPUT_SIG_OFF
 } from '../config'
+import { CANONICAL_LEN as COW_CANONICAL_LEN } from '../cowswap/canonical'
+import { SAFE_V1_CANONICAL_LEN } from '../safe/canonical'
 import { concatBytes, u16be, u32be, u64be } from './bytes'
 
 type SignOffchainCommon = {
@@ -69,9 +80,13 @@ export type SignOffchainParams =
        *
        *  There is NO blind-sign fallback inside the firmware for kind=2 —
        *  a trailer that fails verify or binding returns
-       *  `NscStatus::InvalidPointer` to the host. Callers that can't find
-       *  a descriptor MUST route through kind=0 (raw32) instead, hashing
-       *  the typed data themselves. */
+       *  `NscStatus::InvalidPointer` to the host, and the companion must
+       *  not then retry the same request blind. Typed data the device has
+       *  no route for at all (no descriptor, not a SafeTx / CoW order) is
+       *  signed as kind=0 (raw32) over its EIP-712 hash: the device shows
+       *  a loud BLIND HASH page. That blind fallback is an owner-accepted
+       *  residual (2026-10-19), not a downgrade path for a request the
+       *  device can show. */
       kind: 'eip712_typed'
       /** 32-byte `keccak256(EIP712Domain_typehash || encode(domain))`. */
       domainSeparator: Uint8Array
@@ -85,6 +100,103 @@ export type SignOffchainParams =
        *  `ir_len(u16 BE) || ir || leaf_index(u32 BE) || proof_depth(u32 BE) || proof`. */
       erc7730Bundle: Uint8Array
     })
+  | (SignOffchainCommon & {
+      /** An EIP-712 SafeTx (kind 4). The device recomputes `safeTxHash`
+       *  from `safeV1Bundle`, shows the Safe transaction and signs exactly
+       *  what a raw32 sign of that hash would. Deployed wallets only. */
+      kind: 'safe_tx'
+      /** `canonical (281) || u16 raw_len || raw_data` (`packSafeV1Bundle`). */
+      safeV1Bundle: Uint8Array
+      /** ERC-20 bundle for the SafeTx's token (inner `to`, or a multiSend
+       *  record); omit when there is none. */
+      erc20Bundle?: Uint8Array
+      /** CoW order trailer — required exactly when the SafeTx pre-signs a
+       *  CoW order (owner = the Safe), absent otherwise. */
+      cowTrailer?: Uint8Array
+      /** Name bundles for the addresses shown (≤ 4). */
+      nameBundles?: Uint8Array[]
+    })
+  | (SignOffchainCommon & {
+      /** A CoW Protocol GPv2Order (kind 5). The device recomputes the order
+       *  digest from `cowTrailer`, shows the order and signs exactly what a
+       *  raw32 sign of that digest would. Deployed wallets only. */
+      kind: 'cow_order'
+      /** `canonical (204) || u16 sell_len || sell || u16 buy_len || buy`
+       *  (`packCowTrailer`). */
+      cowTrailer: Uint8Array
+    })
+
+const lenPrefixed = (bytes: Uint8Array): Uint8Array[] => [u16be(bytes.length), bytes]
+
+/** Kind-4 payload: `[u16][safe_v1] [u16][erc20] [u16][cow] [u8 n]{[u16][name]}×n`
+ *  (`proto/src/lib.rs::MAX_OFFCHAIN_SAFE_TX_LEN`). */
+export function buildSafeTxOffchainPayload(p: {
+  safeV1Bundle: Uint8Array
+  erc20Bundle?: Uint8Array
+  cowTrailer?: Uint8Array
+  nameBundles?: Uint8Array[]
+}): Uint8Array {
+  const erc20 = p.erc20Bundle ?? new Uint8Array(0)
+  const cow = p.cowTrailer ?? new Uint8Array(0)
+  const names = p.nameBundles ?? []
+  if (
+    p.safeV1Bundle.length < SAFE_V1_CANONICAL_LEN + 2 ||
+    p.safeV1Bundle.length > OFFCHAIN_SAFE_V1_MAX_LEN
+  ) {
+    throw new Error(`signOffchain: safe_v1 section is ${p.safeV1Bundle.length} bytes`)
+  }
+  const rawLen =
+    (p.safeV1Bundle[SAFE_V1_CANONICAL_LEN]! << 8) | p.safeV1Bundle[SAFE_V1_CANONICAL_LEN + 1]!
+  if (SAFE_V1_CANONICAL_LEN + 2 + rawLen !== p.safeV1Bundle.length) {
+    throw new Error('signOffchain: safe_v1 raw_len does not end the section')
+  }
+  if (erc20.length > OFFCHAIN_ERC20_BUNDLE_MAX_LEN) {
+    throw new Error(`signOffchain: erc20 bundle ${erc20.length} > ${OFFCHAIN_ERC20_BUNDLE_MAX_LEN}`)
+  }
+  if (
+    cow.length > OFFCHAIN_COW_ORDER_TRAILER_MAX_LEN ||
+    (cow.length > 0 && cow.length < COW_CANONICAL_LEN)
+  ) {
+    throw new Error(`signOffchain: CoW section is ${cow.length} bytes`)
+  }
+  if (names.length > OFFCHAIN_MAX_NAME_BUNDLES) {
+    throw new Error(`signOffchain: ${names.length} name bundles > ${OFFCHAIN_MAX_NAME_BUNDLES}`)
+  }
+  for (const n of names) {
+    if (n.length === 0 || n.length > OFFCHAIN_NAME_BUNDLE_MAX_LEN) {
+      throw new Error(`signOffchain: name bundle is ${n.length} bytes`)
+    }
+  }
+  const out = concatBytes([
+    ...lenPrefixed(p.safeV1Bundle),
+    ...lenPrefixed(erc20),
+    ...lenPrefixed(cow),
+    new Uint8Array([names.length]),
+    ...names.flatMap(lenPrefixed)
+  ])
+  if (out.length > MAX_OFFCHAIN_SAFE_TX_LEN) {
+    throw new Error(`signOffchain: safe_tx payload ${out.length} > ${MAX_OFFCHAIN_SAFE_TX_LEN}`)
+  }
+  return out
+}
+
+/** Kind-5 payload: the CoW order trailer itself, which must frame exactly
+ *  (`proto/src/lib.rs::MAX_OFFCHAIN_COW_ORDER_LEN`). */
+export function buildCowOrderOffchainPayload(cowTrailer: Uint8Array): Uint8Array {
+  if (cowTrailer.length < COW_CANONICAL_LEN + 4 || cowTrailer.length > MAX_OFFCHAIN_COW_ORDER_LEN) {
+    throw new Error(`signOffchain: cow_order payload is ${cowTrailer.length} bytes`)
+  }
+  const sellLen = (cowTrailer[COW_CANONICAL_LEN]! << 8) | cowTrailer[COW_CANONICAL_LEN + 1]!
+  const buyOff = COW_CANONICAL_LEN + 2 + sellLen
+  if (buyOff + 2 > cowTrailer.length) {
+    throw new Error('signOffchain: cow_order sell leg overruns the payload')
+  }
+  const buyLen = (cowTrailer[buyOff]! << 8) | cowTrailer[buyOff + 1]!
+  if (buyOff + 2 + buyLen !== cowTrailer.length) {
+    throw new Error('signOffchain: cow_order legs do not end the payload')
+  }
+  return cowTrailer
+}
 
 export function buildSignOffchainPayload(p: SignOffchainParams): Uint8Array {
   if (p.accountIndex < 0 || p.accountIndex > MAX_ACCOUNT_INDEX) {
@@ -97,9 +209,21 @@ export function buildSignOffchainPayload(p: SignOffchainParams): Uint8Array {
     throw new Error(`signOffchain: counterfactual path requires slot_index=0, got ${p.slotIndex}`)
   }
 
+  if ((p.kind === 'safe_tx' || p.kind === 'cow_order') && !p.accountDeployed) {
+    // Neither a Safe nor GPv2Settlement unwraps an ERC-6492 signature, and
+    // the device refuses the kind for an undeployed wallet.
+    throw new Error(`signOffchain: ${p.kind} needs a deployed wallet`)
+  }
+
   let kindByte: number
   let payload: Uint8Array
-  if (p.kind === 'personal_sign') {
+  if (p.kind === 'safe_tx') {
+    kindByte = OFFCHAIN_KIND_SAFE_TX
+    payload = buildSafeTxOffchainPayload(p)
+  } else if (p.kind === 'cow_order') {
+    kindByte = OFFCHAIN_KIND_COW_ORDER
+    payload = buildCowOrderOffchainPayload(p.cowTrailer)
+  } else if (p.kind === 'personal_sign') {
     if (p.message.length > MAX_OFFCHAIN_PERSONAL_SIGN_LEN) {
       throw new Error(
         `signOffchain: personal_sign message ${p.message.length} > ${MAX_OFFCHAIN_PERSONAL_SIGN_LEN} bytes`

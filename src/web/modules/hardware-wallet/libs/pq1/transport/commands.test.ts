@@ -6,6 +6,9 @@
 // lock state.
 
 import {
+  CAP_OFFCHAIN_COW_ORDER,
+  CAP_OFFCHAIN_SAFE_TX,
+  INS_GET_DEVICE_INFO,
   INS_GET_INIT_CODE,
   INS_GET_STATUS,
   INS_GET_WALLET_ADDRESS,
@@ -138,5 +141,36 @@ describe('DeviceCommands.getInitCode', () => {
     await expect(commands.getInitCode(0, 8453)).rejects.toThrow('GET_INIT_CODE: expected')
     await expect(commands.getInitCode(0, 8453)).rejects.toThrow('GET_INIT_CODE: expected')
     expect(sent[INS_GET_INIT_CODE]).toBe(2)
+  })
+})
+
+describe('DeviceCommands.getCapabilities', () => {
+  /** GET_DEVICE_INFO: protocol_version (2) || fw_version (3) || uid (16) ||
+   *  capabilities (u32 BE) || sig_param_set ... */
+  const deviceInfo = (caps: number | null) => {
+    const out = new Uint8Array(caps === null ? 21 : 26)
+    out.set([0x02, 0x03], 0)
+    if (caps !== null)
+      out.set([caps >>> 24, (caps >>> 16) & 0xff, (caps >>> 8) & 0xff, caps & 0xff], 21)
+    return out
+  }
+
+  it('reads the capability word and caches it', async () => {
+    const sent: Record<number, number> = {}
+    const caps = 0x01 | CAP_OFFCHAIN_SAFE_TX | CAP_OFFCHAIN_COW_ORDER
+    const commands = new DeviceCommands(
+      stubTransport({ [INS_GET_DEVICE_INFO]: { sw: SW_OK, data: deviceInfo(caps) } }, sent)
+    )
+    expect(await commands.getCapabilities()).toBe(caps)
+    expect(await commands.getCapabilities()).toBe(caps)
+    expect(await commands.getProtocolVersion()).toBe(0x0203)
+    expect(sent[INS_GET_DEVICE_INFO]).toBe(1)
+  })
+
+  it('reports no capabilities when the reply ends before the word', async () => {
+    const commands = new DeviceCommands(
+      stubTransport({ [INS_GET_DEVICE_INFO]: { sw: SW_OK, data: deviceInfo(null) } })
+    )
+    expect(await commands.getCapabilities()).toBe(0)
   })
 })

@@ -15,6 +15,8 @@ import {
   MAX_NAME_BUNDLES,
   MAX_TRAILERS_PER_BATCH,
   MAX_TX_LEN,
+  OFFCHAIN_NAME_BUNDLE_MAX_LEN,
+  SELECTOR_BUNDLE_MAX_LEN,
   SHA256_EMPTY,
   SIGN_USEROP_BATCH_WIRE_VERSION,
   SLOT_INDEX_MASK,
@@ -356,12 +358,11 @@ const TRAILER_KIND_MAX_LEN: Record<number, number> = {
   // 204 + 2 + MAX_ERC20_BUNDLE_LEN + 2 + MAX_ERC20_BUNDLE_LEN.
   [TRAILER_KIND_ZK_V3]: 204 + 2 + 1120 + 2 + 1120, // 2448
   [TRAILER_KIND_SAFE_V1]: 281 + 2 + 4096, // 4379
-  [TRAILER_KIND_SEL_CURATED]: 1156,
+  [TRAILER_KIND_SEL_CURATED]: SELECTOR_BUNDLE_MAX_LEN, // 1100
   [TRAILER_KIND_SEL_SELFATTEST]: 68,
   [TRAILER_KIND_ERC7730]: ERC7730_MAX_TRAILER_LEN,
-  // Names cap matches `MAX_NAME_BUNDLE_LEN`; bumping in lockstep with
-  // firmware's `tx/src/names/bundle.rs`. Conservative cap chosen here.
-  [TRAILER_KIND_NAME]: 1156
+  // Names cap matches firmware `tx/src/names/bundle.rs::MAX_NAME_BUNDLE_LEN`.
+  [TRAILER_KIND_NAME]: OFFCHAIN_NAME_BUNDLE_MAX_LEN // 1093
 }
 
 type TrailerRecord = { kind: number; txIdx: number; bytes: Uint8Array }

@@ -76,11 +76,6 @@ export async function tryBuildSafeV1Trailer(
 
   const rawData = hexToBytes(fields.data)
   assertSafeOperationSignable(fields.operation, fields.to, rawData)
-  if (rawData.length > SAFE_V1_RAW_DATA_MAX) {
-    throw new Error(
-      `Safe inner raw_data is ${rawData.length} bytes, exceeds firmware cap ${SAFE_V1_RAW_DATA_MAX}`
-    )
-  }
 
   // One canonical-fields object for both the trailer bytes and the local
   // safeTxHash re-derivation — if these two ever diverge (an edited field
@@ -102,9 +97,6 @@ export async function tryBuildSafeV1Trailer(
   }
 
   const canonical = encodeSafeCanonical(canonicalFields)
-  if (canonical.length !== SAFE_V1_CANONICAL_LEN) {
-    throw new Error(`canonical length ${canonical.length} != ${SAFE_V1_CANONICAL_LEN}`)
-  }
 
   // Re-derive safeTxHash from the canonical and require it equals the
   // on-chain hash the dapp asked us to approve. The firmware re-derives
@@ -119,6 +111,20 @@ export async function tryBuildSafeV1Trailer(
     )
   }
 
-  const safeV1Bundle = concatBytes([canonical, u16be(rawData.length), rawData])
-  return { safeV1Bundle, fields }
+  return { safeV1Bundle: packSafeV1Bundle(canonical, rawData), fields }
+}
+
+/** `canonical (281) || u16 BE raw_data_len || raw_data` — the `safe_v1`
+ *  section shared by the on-chain approveHash trailer and the off-chain
+ *  SafeTx sign (SIGN_OFFCHAIN kind 4). */
+export function packSafeV1Bundle(canonical: Uint8Array, rawData: Uint8Array): Uint8Array {
+  if (canonical.length !== SAFE_V1_CANONICAL_LEN) {
+    throw new Error(`canonical length ${canonical.length} != ${SAFE_V1_CANONICAL_LEN}`)
+  }
+  if (rawData.length > SAFE_V1_RAW_DATA_MAX) {
+    throw new Error(
+      `Safe inner raw_data is ${rawData.length} bytes, exceeds firmware cap ${SAFE_V1_RAW_DATA_MAX}`
+    )
+  }
+  return concatBytes([canonical, u16be(rawData.length), rawData])
 }

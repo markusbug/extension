@@ -750,6 +750,38 @@ async function resolveSafeApproveHash(
   }
 }
 
+/** The sections an off-chain SafeTx sign (SIGN_OFFCHAIN kind 4) carries
+ *  besides the SafeTx itself: the ERC-20 bundle for its token, the CoW order
+ *  trailer when it pre-signs a CoW order (owner = the Safe — required by the
+ *  device then, refused otherwise), and name bundles for the addresses the
+ *  device shows. Applies the same Safe operation rules the device enforces
+ *  (DELEGATECALL only as an allowlisted MultiSendCallOnly batch) and throws
+ *  a user-facing refusal for a SafeTx it would refuse. */
+export async function buildOffchainSafeTxSections(
+  chainId: number,
+  safe: `0x${string}`,
+  inner: SafeTxInnerCall
+): Promise<{ erc20Bundle?: Uint8Array; cowTrailer?: Uint8Array; nameBundles: Uint8Array[] }> {
+  try {
+    assertSafeOperationSignable(inner.operation, inner.to, inner.data)
+  } catch (e) {
+    throw new Pq1UserError(SAFE_REFUSED_MESSAGE, errorText(e))
+  }
+  const binding = resolveSafeCowBinding(inner.operation, inner.to.toLowerCase(), inner.data)
+  if (binding.kind === 'refuse') throw safeMultiSendRefusal(binding.banner)
+  const v3 =
+    binding.kind === 'bind'
+      ? await requireCowV3Trailer(chainId, safe, binding.calldata, 'Safe-wrapped CoW')
+      : undefined
+  const nameAddrs = [...collectSafeTxDisplayAddresses(inner), hexToBytes(safe)]
+  if (v3) nameAddrs.push(hexToBytes(v3.order.receiver))
+  const [erc20Bundle, nameBundles] = await Promise.all([
+    resolveSafeTxErc20Bundle(chainId, inner),
+    buildNameBundles(chainId, nameAddrs, MAX_NAME_BUNDLES)
+  ])
+  return { erc20Bundle, cowTrailer: v3?.zkV3Bundle, nameBundles }
+}
+
 async function resolveSafeExecTransaction(
   chainId: number,
   safe: `0x${string}`,

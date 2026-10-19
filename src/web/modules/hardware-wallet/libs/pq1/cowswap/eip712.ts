@@ -85,7 +85,10 @@ function structHash(order: GPv2Order): Uint8Array {
   return keccak256Bytes(buf)
 }
 
-function orderDigest(order: GPv2Order): Uint8Array {
+/** The EIP-712 digest of `order` under the GPv2Settlement domain for
+ *  `order.chainId` — what an EIP-1271 CoW order signature signs, and the
+ *  first 32 bytes of its uid. */
+export function computeOrderDigest(order: GPv2Order): Uint8Array {
   const buf = new Uint8Array(2 + 32 + 32)
   buf[0] = 0x19
   buf[1] = 0x01
@@ -95,7 +98,7 @@ function orderDigest(order: GPv2Order): Uint8Array {
 }
 
 export function buildOrderUid(order: GPv2Order, owner: `0x${string}`): OrderUid {
-  const digest = orderDigest(order)
+  const digest = computeOrderDigest(order)
   const ownerBytes = hexToBytes(owner)
   if (ownerBytes.length !== 20) throw new Error('owner must be 20 bytes')
   const out = new Uint8Array(56)

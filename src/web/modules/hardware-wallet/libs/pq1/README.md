@@ -38,7 +38,14 @@ names/       address-name lookup + bundle builder
 erc7730/     ERC-7730 descriptor catalog + EIP-712 trailer builder
 safe/        Safe transaction byte-parsers + presign bundle (clear-signs Safe txs)
 cowswap/     CoW Protocol order encoding (clear-signs setPreSignature)
+offchain/    Safe SafeTx / CoW order typed data → the device's native off-chain kinds
 ```
+
+Typed data (`PQ1Signer.signTypedData`) takes the first route that fits: a
+Safe `SafeTx` or CoW `Order` goes to the device's own off-chain kind when the
+device reports the capability bit; otherwise an ERC-7730 descriptor; otherwise
+the EIP-712 hash is signed blind (the device shows a loud BLIND HASH page).
+A request sent on one route is never retried on a weaker one.
 
 Comments referencing `sphincs_rust/...` point into the PQ1 firmware source
 tree, and `pq1-companion/...` into the desktop companion. Both define the

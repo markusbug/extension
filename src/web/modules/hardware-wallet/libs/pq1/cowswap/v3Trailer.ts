@@ -163,32 +163,45 @@ export async function tryBuildV3Trailer(
     )
   }
 
-  const canonical = encodeCanonical(order)
+  return { zkV3Bundle: await buildCowOrderTrailer(order), order, uid: recomputed }
+}
 
-  // Build the two optional ERC-20 leg bundles. Each is keyed by
-  // (canonical.chain_id, leg token) so it matches the firmware's per-leg
-  // cross-check exactly; a DB miss / load failure yields a 0x0000-length
-  // leg and the device degrades that leg to AddrOnly (raw address +
-  // uint256 hex) — never an error.
-  const [sellBundle, buyBundle] = await Promise.all([
-    tryErc20Leg(chainNum, order.sellToken),
-    tryErc20Leg(chainNum, order.buyToken)
+/** The CoW order trailer for `order` with its two ERC-20 leg bundles looked
+ *  up in the host DB — the on-chain kind-3 trailer and, byte for byte, the
+ *  off-chain CoW order sign's payload (SIGN_OFFCHAIN kind 5). Each leg is
+ *  keyed by (canonical.chain_id, leg token) so it matches the firmware's
+ *  per-leg cross-check exactly; a DB miss / load failure yields a
+ *  0x0000-length leg and the device degrades that leg to AddrOnly (raw
+ *  address + uint256 hex) — never an error. */
+export async function buildCowOrderTrailer(order: GPv2Order): Promise<Uint8Array> {
+  const [sell, buy] = await Promise.all([
+    tryErc20Leg(order.chainId, order.sellToken),
+    tryErc20Leg(order.chainId, order.buyToken)
   ])
+  return packCowTrailer(order, { sell, buy })
+}
 
-  const zkV3Bundle = concatBytes([
-    canonical,
-    u16be(sellBundle ? sellBundle.length : 0),
-    sellBundle ?? new Uint8Array(0),
-    u16be(buyBundle ? buyBundle.length : 0),
-    buyBundle ?? new Uint8Array(0)
+/** `canonical (204) || u16 sell_len || sell || u16 buy_len || buy`; a
+ *  missing leg bundle ships with length 0. */
+export function packCowTrailer(
+  order: GPv2Order,
+  legs: { sell?: Uint8Array | null; buy?: Uint8Array | null } = {}
+): Uint8Array {
+  const sell = legs.sell ?? new Uint8Array(0)
+  const buy = legs.buy ?? new Uint8Array(0)
+  const trailer = concatBytes([
+    encodeCanonical(order),
+    u16be(sell.length),
+    sell,
+    u16be(buy.length),
+    buy
   ])
-  if (zkV3Bundle.length > COW_ORDER_TRAILER_MAX_LEN) {
+  if (trailer.length > COW_ORDER_TRAILER_MAX_LEN) {
     throw new Error(
-      `CoW kind-3 trailer ${zkV3Bundle.length} B exceeds firmware cap ${COW_ORDER_TRAILER_MAX_LEN} B`
+      `CoW order trailer ${trailer.length} B exceeds firmware cap ${COW_ORDER_TRAILER_MAX_LEN} B`
     )
   }
-
-  return { zkV3Bundle, order, uid: recomputed }
+  return trailer
 }
 
 /** Look up one CoW leg token in the host ERC-20 DB and build its kind-1

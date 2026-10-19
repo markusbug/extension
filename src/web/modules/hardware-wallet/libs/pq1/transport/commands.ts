@@ -59,6 +59,10 @@ const LEGACY_STATUS_RESPONSE_LEN = 3
  *  v2 batch payload — we refuse to send and surface a clean message. */
 export const MIN_BATCH_V2_PROTOCOL_VERSION = 0x0200
 
+/** Offset of the u32 BE capability word in the GET_DEVICE_INFO reply:
+ *  after `protocol_version` (2), `fw_version` (3) and `device_uid` (16). */
+const DEVICE_INFO_CAPABILITIES_OFF = 2 + 3 + 16
+
 /** Typed wrappers for every PQ1 command the extension uses: status, unlock,
  *  address discovery, init code, and the UserOp / off-chain signing
  *  commands. Status words are turned into `DeviceError`s with a `code` the
@@ -68,6 +72,10 @@ export class DeviceCommands {
   // response). The device's protocol version is immutable per session,
   // so a single read suffices.
   private cachedProtocolVersion: number | null = null
+
+  // Cached capability word (u32 BE at GET_DEVICE_INFO bytes 21..24), read
+  // with the protocol version. Immutable per session like it.
+  private cachedCapabilities: number | null = null
 
   /** GET_INIT_CODE results keyed by `${accountIndex}:${chainId}`. Every call
    *  spends one signature of the bootstrap key, which is a few-time
@@ -83,7 +91,20 @@ export class DeviceCommands {
     if (r.data.length >= 2 && this.cachedProtocolVersion === null) {
       this.cachedProtocolVersion = (r.data[0]! << 8) | r.data[1]!
     }
+    if (this.cachedCapabilities === null) {
+      this.cachedCapabilities = parseDeviceCapabilities(r.data)
+    }
     return r.data
+  }
+
+  /** The device's capability bits (`CAP_*` in `../config`), fetched on
+   *  first call and cached for the session. Firmware whose GET_DEVICE_INFO
+   *  reply ends before the capability word reports none. Gate an optional
+   *  command or payload kind on its bit, never on an error from trying it. */
+  async getCapabilities(): Promise<number> {
+    if (this.cachedCapabilities !== null) return this.cachedCapabilities
+    await this.getDeviceInfo()
+    return this.cachedCapabilities ?? 0
   }
 
   /** Returns the device's wire-protocol version, fetching it on first
@@ -286,6 +307,16 @@ export class DeviceCommands {
       expectOk(r.sw, 'OFFCHAIN_SYNC')
     })
   }
+}
+
+/** The u32 BE capability word of a GET_DEVICE_INFO reply, or 0 when the
+ *  reply is too short to carry one (older firmware). */
+export function parseDeviceCapabilities(info: Uint8Array): number {
+  const off = DEVICE_INFO_CAPABILITIES_OFF
+  if (info.length < off + 4) return 0
+  return (
+    ((info[off]! << 24) | (info[off + 1]! << 16) | (info[off + 2]! << 8) | info[off + 3]!) >>> 0
+  )
 }
 
 function expectOk(sw: number, what: string): void {

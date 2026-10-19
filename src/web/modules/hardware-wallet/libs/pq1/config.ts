@@ -70,7 +70,8 @@ export const PQ_INIT_CODE_LEN = 20 + 4 + 5 * 32 + 32 + 32 + 4032 // 4280
 //   [ 1..  9)  chain_id         (u64 BE)
 //   [ 9.. 13)  slot_index       (u32 BE)
 //   [13.. 14)  kind             (u8 — 0 = RAW32, 1 = PERSONAL_SIGN,
-//                                       2 = EIP712_TYPED w/ ERC-7730 trailer)
+//                                       2 = EIP712_TYPED w/ ERC-7730 trailer,
+//                                       4 = SAFE_TX, 5 = COW_ORDER)
 //   [14.. 16)  payload_len      (u16 BE)
 //   [16.. 17)  flags            (u8 — bit 0 = OFFCHAIN_FLAG_ACCOUNT_DEPLOYED)
 // Matches `cmd_sign_offchain` in sphincs_rust commit 874cd47 ("ERC-6492
@@ -147,11 +148,46 @@ export const MAX_OFFCHAIN_EIP712_ENCODED_DATA_LEN = 512
 export const MAX_OFFCHAIN_EIP712_TYPED_LEN =
   2 + 32 + 32 + 2 + MAX_OFFCHAIN_EIP712_ENCODED_DATA_LEN + 2 + ERC7730_MAX_TRAILER_LEN
 
-// Sized for the largest valid request across all kinds — kind=2 with a
-// max-size ERC-7730 trailer dominates personal_sign. Mirrors
-// `proto/src/lib.rs::SIGN_OFFCHAIN_INPUT_MAX_LEN`.
+// ── Structured off-chain kinds 4 (SafeTx) / 5 (CoW order) ──────────
+// Section caps, mirroring `proto/src/lib.rs`.
+/** One kind-1 ERC-20 bundle (`COW_ORDER_BUNDLE_MAX` = 64 + 1024 + 32). */
+export const OFFCHAIN_ERC20_BUNDLE_MAX_LEN = 1120
+/** The `safe_v1` section: canonical (281) + u16 raw_len + raw_data (≤ 4096). */
+export const OFFCHAIN_SAFE_V1_MAX_LEN = 281 + 2 + MAX_TX_LEN // 4379
+/** The CoW order section: canonical (204) + two length-prefixed leg bundles. */
+export const OFFCHAIN_COW_ORDER_TRAILER_MAX_LEN = 204 + 2 * (2 + OFFCHAIN_ERC20_BUNDLE_MAX_LEN) // 2448
+/** One name bundle (`OFFCHAIN_NAME_BUNDLE_MAX_LEN` = 8 + 20 + 1 + 32 + 4 + 4 + 32 × 32). */
+export const OFFCHAIN_NAME_BUNDLE_MAX_LEN = 1093
+/** One curated selector bundle (`tx/src/selectors/bundle.rs`
+ *  `MAX_SELECTOR_BUNDLE_LEN` = 4 + 1 + 63 + 4 + 4 + 32 × 32). */
+export const SELECTOR_BUNDLE_MAX_LEN = 1100
+/** Name bundles one kind-4 payload may carry (`OFFCHAIN_MAX_NAME_BUNDLES`). */
+export const OFFCHAIN_MAX_NAME_BUNDLES = 4
+// MAX_OFFCHAIN_SAFE_TX_LEN — full kind-4 payload upper bound:
+// [u16][safe_v1] [u16][erc20] [u16][cow] [u8 n]{[u16][name]}×n.
+export const MAX_OFFCHAIN_SAFE_TX_LEN =
+  2 +
+  OFFCHAIN_SAFE_V1_MAX_LEN +
+  2 +
+  OFFCHAIN_ERC20_BUNDLE_MAX_LEN +
+  2 +
+  OFFCHAIN_COW_ORDER_TRAILER_MAX_LEN +
+  1 +
+  OFFCHAIN_MAX_NAME_BUNDLES * (2 + OFFCHAIN_NAME_BUNDLE_MAX_LEN) // 12,334
+// MAX_OFFCHAIN_COW_ORDER_LEN — the kind-5 payload is the CoW order trailer.
+export const MAX_OFFCHAIN_COW_ORDER_LEN = OFFCHAIN_COW_ORDER_TRAILER_MAX_LEN
+
+// Sized for the largest valid request across all kinds — the kind-4
+// SafeTx payload dominates. Mirrors
+// `proto/src/lib.rs::SIGN_OFFCHAIN_INPUT_MAX_LEN` (12,351).
 export const SIGN_OFFCHAIN_INPUT_MAX_LEN =
-  SIGN_OFFCHAIN_HEADER_LEN + Math.max(MAX_OFFCHAIN_PERSONAL_SIGN_LEN, MAX_OFFCHAIN_EIP712_TYPED_LEN)
+  SIGN_OFFCHAIN_HEADER_LEN +
+  Math.max(
+    MAX_OFFCHAIN_PERSONAL_SIGN_LEN,
+    MAX_OFFCHAIN_EIP712_TYPED_LEN,
+    MAX_OFFCHAIN_SAFE_TX_LEN,
+    MAX_OFFCHAIN_COW_ORDER_LEN
+  )
 
 export const OFFCHAIN_KIND_RAW32 = 0
 export const OFFCHAIN_KIND_PERSONAL_SIGN = 1
@@ -161,6 +197,19 @@ export const OFFCHAIN_KIND_PERSONAL_SIGN = 1
 // firmware constant `OFFCHAIN_KIND_EIP712_TYPED` in
 // sphincs_rust/proto/src/lib.rs.
 export const OFFCHAIN_KIND_EIP712_TYPED = 2
+// An EIP-712 SafeTx (Safe ≥ v1.3.0 domain): the device recomputes
+// `safeTxHash` from the canonical fields it shows and signs exactly what a
+// RAW32 sign of that hash would. Gated by CAP_OFFCHAIN_SAFE_TX.
+export const OFFCHAIN_KIND_SAFE_TX = 4
+// A CoW Protocol GPv2Order: the device recomputes the order digest from the
+// canonical order it shows. Gated by CAP_OFFCHAIN_COW_ORDER.
+export const OFFCHAIN_KIND_COW_ORDER = 5
+
+// GET_DEVICE_INFO capability bits (u32 BE at bytes 21..24). A companion
+// sends kinds 4 / 5 only when the matching bit is set — never as a retry
+// after an error.
+export const CAP_OFFCHAIN_SAFE_TX = 1 << 3
+export const CAP_OFFCHAIN_COW_ORDER = 1 << 4
 
 // Flags byte values for the sign-offchain header.
 export const OFFCHAIN_FLAG_ACCOUNT_DEPLOYED = 0x01
@@ -183,8 +232,9 @@ export const OFFCHAIN_STATUS_OUTPUT_REGISTERED_OFF = 16
 
 // cmd_sign_offchain enforces `local_offchain - last_userop < MAX_OFFCHAIN_GAP`
 // so the device cannot emit more than this many unbacked off-chain sigs before
-// the next on-chain UserOp publishes the count.
-export const MAX_OFFCHAIN_GAP = 5n
+// the next on-chain UserOp publishes the count. Mirrors
+// `proto/src/lib.rs::MAX_OFFCHAIN_GAP`.
+export const MAX_OFFCHAIN_GAP = 100n
 
 export function timeoutForIns(ins: number): number {
   switch (ins) {
