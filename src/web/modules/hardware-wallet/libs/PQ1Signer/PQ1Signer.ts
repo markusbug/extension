@@ -18,13 +18,14 @@ import {
 import PQ1Controller from '../../controllers/PQ1Controller'
 import { resolvePq1AccountState, type Pq1AccountState } from '../pq1/aa/accountState'
 import { pq1BroadcastAccountOp } from '../pq1/aa/broadcast'
-import { MAX_OFFCHAIN_PERSONAL_SIGN_LEN, PQ1_SUPPORTED_CHAIN_IDS } from '../pq1/config'
+import { PQ1_SUPPORTED_CHAIN_IDS } from '../pq1/config'
 import { buildErc7730Eip712Pieces } from '../pq1/erc7730/eip712'
 import { buildErc7730BundleForEip712 } from '../pq1/erc7730/lookup'
 import { PQ1_UNSUPPORTED_NETWORK_MESSAGE, toUserFacingPq1Error } from '../pq1/errors'
 import { bytesToHex0x, hexToBytes } from '../pq1/transport/bytes'
 import { DeviceError } from '../pq1/transport/hid'
 import type { SignOffchainBundle } from '../pq1/transport/offchain'
+import { personalSignFitsDevice } from '../pq1/transport/personalSignView'
 
 type PQ1Meta = ExternalKey['meta'] & {
   /** Same as `index` for PQ1 — kept named for clarity at the call site. */
@@ -248,17 +249,20 @@ class PQ1Signer implements KeystoreSignerInterface {
     try {
       const common = { accountIndex, slotIndex, chainId, accountDeployed: isDeployed } as const
       const bundle = await this.#withDevice((sdk) =>
-        messageBytes.length <= MAX_OFFCHAIN_PERSONAL_SIGN_LEN
+        personalSignFitsDevice(messageBytes)
           ? // Pass the raw message — firmware computes the EIP-191 prefix hash
-            // and renders the text on the OLED before signing.
+            // and shows the message on its screen before signing: as text
+            // (line breaks kept), or as hex when it isn't text.
             sdk.commands.signOffchain({
               ...common,
               kind: 'personal_sign',
               message: messageBytes
             })
-          : // Message exceeds the firmware's 700-byte personal_sign cap. Fall
-            // back to raw32 mode using the EIP-191 digest computed on this
-            // side. The OLED will only show the digest, not the message.
+          : // The message doesn't fit the device's pages (over 700 bytes,
+            // over 512 bytes of non-text shown as hex, or too many lines).
+            // Fall back to raw32 mode using the EIP-191 digest computed on
+            // this side. The device will only show the digest, not the
+            // message.
             sdk.commands.signOffchain({
               ...common,
               kind: 'raw32',
