@@ -3,7 +3,14 @@
 // not in front of a real PQ1. The fake device runs the real wire-payload
 // builders, so firmware size caps and trailer rules are checked too.
 
-import { C10_SIG_LEN, FACTORY, PQ_INIT_CODE_LEN, SIG_WRAPPER_LEN } from '../config'
+import {
+  C10_SIG_LEN,
+  CAP_OFFCHAIN_COW_ORDER,
+  CAP_OFFCHAIN_SAFE_TX,
+  FACTORY,
+  PQ_INIT_CODE_LEN,
+  SIG_WRAPPER_LEN
+} from '../config'
 import { DeviceError } from '../transport/hid'
 import { buildSignOffchainPayload, type SignOffchainParams } from '../transport/offchain'
 import {
@@ -48,6 +55,9 @@ function fakeDevice(refuses: boolean) {
     if (refuses) throw new DeviceError('SIGN_USEROP: refused (SW=0x6f00)', 0x6f00, 'sign-refused')
   }
   const commands = {
+    // The current firmware's GET_DEVICE_INFO capability bits for the
+    // structured off-chain kinds (SafeTx 4, CoW order 5).
+    getCapabilities: jest.fn(async () => CAP_OFFCHAIN_SAFE_TX | CAP_OFFCHAIN_COW_ORDER),
     getInitCode: jest.fn(async () => fakeInitCode()),
     signUserOp: jest.fn(async (p: SignRequestParams) => {
       buildSignPayload(p)
@@ -151,6 +161,16 @@ describe('PQ1 device harness scenarios (fake device)', () => {
     const { outcome, commands } = await run({ ...firstDeploy, spendsBootstrapKey: false })
     expect(outcome.status).toBe('refused-by-wallet')
     expect(commands.getInitCode).not.toHaveBeenCalled()
+  })
+
+  it('sends the Safe and CoW typed data as their structured kinds', async () => {
+    for (const [id, kind] of [
+      ['typed-safe-tx', 'safe_tx'],
+      ['typed-cow-order', 'cow_order']
+    ] as const) {
+      const { sent } = await run(SCENARIOS.find((s) => s.id === id)!)
+      expect(sent).toEqual([`signOffchain:${kind}`])
+    }
   })
 
   it('signs only as the harness account', async () => {

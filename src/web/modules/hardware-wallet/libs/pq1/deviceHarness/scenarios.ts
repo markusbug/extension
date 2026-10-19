@@ -727,10 +727,8 @@ export const SCENARIOS: Scenario[] = [
     id: 'typed-cow-order',
     group: 'Messages',
     title: 'CoW Swap order signed by an app (EIP-712)',
-    // TODO(C7): becomes a clear-signed order once Ambire sends the off-chain
-    // CoW order kind (firmware SIGN_OFFCHAIN kind 5).
     expected:
-      'BLIND HASH for now: "! BLIND RAW32" warning and the full hash, before the first Confirm?',
+      'SIGN COW ORDER? — sell 1500 USDC for at least 0.5 WETH, receiver shown as your account address, valid until 2030-01-01; the whole order before Confirm? (firmware without the CoW order capability signs the hash blind instead)',
     build: ({ sender }) => ({
       kind: 'typedData',
       chainId: ETHEREUM,
@@ -779,10 +777,8 @@ export const SCENARIOS: Scenario[] = [
     id: 'typed-safe-tx',
     group: 'Messages',
     title: 'Safe transaction signed off-chain (SafeTx)',
-    // TODO(C7): becomes a clear-signed Safe transaction once Ambire sends the
-    // off-chain SafeTx kind (firmware SIGN_OFFCHAIN kind 4).
     expected:
-      'BLIND HASH for now: "! BLIND RAW32" warning and the full hash, before the first Confirm?',
+      'SIGN SAFE TX? — Safe 0x5afe…5afe sends 100 USDC to 0x1234…5678, nonce 3; the whole transaction before Confirm? (firmware without the SafeTx capability signs the hash blind instead)',
     build: () => ({
       kind: 'typedData',
       chainId: ETHEREUM,
