@@ -72,6 +72,7 @@ sends against them, so:
 | `erc20_db.bin` | 9.6 MB | ERC-20 name/symbol/decimals per (chainId, contract) |
 | `names_db.bin` | 105 KB | well-known contract / address names |
 | `erc7730_db.bin` | 331 KB | ERC-7730 clear-signing descriptors (365) |
+| `selectors_db.bin` | 775 KB | curated function names, shown when a call is blind-signed |
 
 They are copied to the build unchanged (`webpack/extension.js`), never
 imported into any JS bundle, and fetched lazily via `browser.runtime.getURL`

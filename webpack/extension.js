@@ -333,7 +333,7 @@ module.exports = async function buildExtension(
     },
     {
       // PQ1 hardware-wallet clear-signing catalogs (ERC-20 metadata, address
-      // names, ERC-7730 descriptors). Fetched lazily from the extension's own
+      // names, ERC-7730 descriptors, function selectors). Fetched lazily from the extension's own
       // assets by `src/web/modules/hardware-wallet/libs/pq1/db/common.ts` —
       // see the README in `libs/pq1/` for why they ship with the build.
       from: './src/web/public/pq1',

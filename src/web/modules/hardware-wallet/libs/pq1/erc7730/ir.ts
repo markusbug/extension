@@ -1,0 +1,242 @@
+// Minimal reader for the compiled ERC-7730 IR blobs inside `erc7730_db.bin`.
+//
+// TypeScript port of the parts of the firmware's
+// `pqsigner-erc7730/src/ir.rs` (header, format table, field entries) and
+// `render/params.rs` (parameter TLVs) the companion needs to route a sign
+// request. It does NOT validate a descriptor the way the device does — the
+// device Merkle-verifies and deep-validates every IR it is sent, so a wrong
+// answer here can only make the companion attach (or omit) a trailer the
+// device then refuses or ignores. Never a wrong screen.
+//
+// What the companion reads from it:
+//   - the 4-byte selectors (EIP-712: primary-type-hash prefixes) a
+//     descriptor has formats for, so a call the descriptor does not cover is
+//     sent without the descriptor instead of failing its binding check;
+//   - for each `tokenAmount` field, where its token comes from (a constant
+//     address, an ABI head word of the calldata, or the call target), so the
+//     matching ERC-20 metadata bundle can ride along.
+
+/** IR schema version this reader understands (`ir.rs::SCHEMA_VER`). */
+export const IR_SCHEMA_VER = 0x06
+/** Fixed header length (`ir.rs::HEADER_LEN`). */
+export const IR_HEADER_LEN = 134
+
+export const IR_CTX_CONTRACT = 0x01
+export const IR_CTX_EIP712 = 0x02
+
+/** `FormatOp::TokenAmount`. */
+export const FORMAT_OP_TOKEN_AMOUNT = 0x03
+
+const PARAM_TOKEN_PATH = 0x30
+const PARAM_TOKEN = 0x31
+
+const PATH_ROOT_STRUCTURED = 0x10
+const PATH_ROOT_CONTAINER = 0x11
+const PATH_FIELD_IDX = 0x20
+/** `abi.rs::container_field::TO` — the `@.to` container field. */
+const CONTAINER_FIELD_TO = 0x1b56
+
+const ABI_WORD_LEN = 32
+const SELECTOR_LEN = 4
+const ADDRESS_LEN = 20
+
+/** Where a `tokenAmount` field takes its token address from. Only the shapes
+ *  the companion can resolve without a full path interpreter are modelled;
+ *  anything else (packed swap paths, dynamic arrays, …) is `null` and simply
+ *  gets no ERC-20 bundle — the device then shows the raw amount and the
+ *  token address. */
+export type IrTokenSource =
+  /** `params.token`: a literal address in the descriptor. */
+  | { kind: 'constant'; address: Uint8Array }
+  /** `params.tokenPath` into the calldata head: ABI word `slot` after the
+   *  selector. */
+  | { kind: 'calldataWord'; slot: number }
+  /** `params.tokenPath = "@.to"`: the called contract itself. */
+  | { kind: 'callTarget' }
+
+/** One field of a format. */
+export type IrField = {
+  formatOp: number
+  label: string
+  /** Set for `tokenAmount` fields whose token source this reader models. */
+  tokenSource: IrTokenSource | null
+}
+
+/** One format (one function, or one EIP-712 primary type). */
+export type IrFormat = {
+  /** Calldata selector, or the first 4 bytes of the EIP-712 type hash. */
+  selector: Uint8Array
+  /** Full EIP-712 primary-type hash; all zero for contract formats. */
+  typeHash: Uint8Array
+  fields: IrField[]
+}
+
+/** The parts of one IR blob the companion uses. */
+export type Erc7730IrView = {
+  contextKind: number
+  chainId: bigint
+  contract: Uint8Array
+  formats: IrFormat[]
+}
+
+const readU16Be = (b: Uint8Array, off: number): number => (b[off]! << 8) | b[off + 1]!
+
+function slice(b: Uint8Array, start: number, len: number, what: string): Uint8Array {
+  if (start < 0 || len < 0 || start + len > b.length) {
+    throw new Error(`erc7730 IR: ${what} out of range`)
+  }
+  return b.subarray(start, start + len)
+}
+
+const ascii = (b: Uint8Array): string => String.fromCharCode(...b)
+
+/** Decode a `tokenPath` program (raw, no length prefix). */
+function decodeTokenPath(prog: Uint8Array): IrTokenSource | null {
+  if (prog.length === 0) return null
+  if (prog[0] === PATH_ROOT_CONTAINER) {
+    const isToField =
+      prog.length === 4 && prog[1] === PATH_FIELD_IDX && readU16Be(prog, 2) === CONTAINER_FIELD_TO
+    return isToField ? { kind: 'callTarget' } : null
+  }
+  if (prog[0] !== PATH_ROOT_STRUCTURED) return null
+  // A static head word is addressed by a run of FieldIdx ops whose
+  // arguments sum to the word's head slot (`resolve_path_bytes`). Any other
+  // op (offset follow, slice, array index) needs the full resolver.
+  let slot = 0
+  let p = 1
+  while (p < prog.length) {
+    if (prog[p] !== PATH_FIELD_IDX || p + 3 > prog.length) return null
+    slot += readU16Be(prog, p + 1)
+    p += 3
+  }
+  return p === 1 ? null : { kind: 'calldataWord', slot }
+}
+
+/** Read the token source of one field's parameter TLV blob, or null. */
+function readTokenSource(pool: Uint8Array, paramOff: number): IrTokenSource | null {
+  if (paramOff === 0) return null
+  const blobLen = pool[paramOff]
+  if (blobLen === undefined) throw new Error('erc7730 IR: param blob out of range')
+  const body = slice(pool, paramOff + 1, blobLen, 'param blob')
+  let tokenPath: IrTokenSource | null | undefined
+  let constant: IrTokenSource | null = null
+  let p = 0
+  while (p < body.length) {
+    if (p + 2 > body.length) throw new Error('erc7730 IR: truncated param TLV')
+    const tag = body[p]!
+    const len = body[p + 1]!
+    const payload = slice(body, p + 2, len, 'param TLV')
+    p += 2 + len
+    if (tag === PARAM_TOKEN_PATH) tokenPath = decodeTokenPath(payload)
+    if (tag === PARAM_TOKEN && payload.length === ADDRESS_LEN) {
+      constant = { kind: 'constant', address: payload.slice() }
+    }
+  }
+  // The firmware resolves `tokenPath` first and only then the literal
+  // (`formatters::resolve_token_address`); mirror that precedence.
+  return tokenPath !== undefined ? tokenPath : constant
+}
+
+/** Parse the header and format table of one IR blob. Throws on a blob it
+ *  cannot walk; callers treat that as "no descriptor". */
+export function parseErc7730Ir(ir: Uint8Array): Erc7730IrView {
+  if (ir.length < IR_HEADER_LEN) throw new Error('erc7730 IR: shorter than its header')
+  if (ir[0] !== IR_SCHEMA_VER) {
+    throw new Error(`erc7730 IR: schema 0x${ir[0]!.toString(16)} is not 0x06`)
+  }
+  const contextKind = ir[1]!
+  if (contextKind !== IR_CTX_CONTRACT && contextKind !== IR_CTX_EIP712) {
+    throw new Error(`erc7730 IR: unknown context kind ${contextKind}`)
+  }
+  let chainId = 0n
+  for (let i = 2; i < 10; i++) chainId = (chainId << 8n) | BigInt(ir[i]!)
+  const contract = ir.slice(10, 30)
+
+  const metadataOff = readU16Be(ir, 126)
+  const formatsOff = readU16Be(ir, 128)
+  const poolLen = readU16Be(ir, 130)
+  const formatsLen = readU16Be(ir, 132)
+  if (metadataOff !== IR_HEADER_LEN || formatsOff !== metadataOff + poolLen) {
+    throw new Error('erc7730 IR: bad section layout')
+  }
+  if (formatsOff + formatsLen !== ir.length) throw new Error('erc7730 IR: bad total length')
+  const pool = ir.subarray(metadataOff, metadataOff + poolLen)
+  const table = ir.subarray(formatsOff, formatsOff + formatsLen)
+
+  const formats: IrFormat[] = []
+  const formatCount = table.length === 0 ? 0 : table[0]!
+  let p = table.length === 0 ? 0 : 1
+  for (let f = 0; f < formatCount; f++) {
+    const head = slice(table, p, 10, 'format header')
+    const selector = head.slice(0, SELECTOR_LEN)
+    const fieldCount = head[4]!
+    const intentLen = head[5]!
+    p += 10 + intentLen
+    let typeHash = new Uint8Array(32)
+    if (contextKind === IR_CTX_EIP712) {
+      typeHash = slice(table, p, 32, 'type hash').slice()
+      p += 32
+    }
+    const fields: IrField[] = []
+    for (let i = 0; i < fieldCount; i++) {
+      const fieldHead = slice(table, p, 2, 'field header')
+      const formatOp = fieldHead[0]!
+      const labelLen = fieldHead[1]!
+      const label = ascii(slice(table, p + 2, labelLen, 'field label'))
+      const offs = slice(table, p + 2 + labelLen, 4, 'field offsets')
+      p += 2 + labelLen + 4
+      const paramOff = readU16Be(offs, 2)
+      fields.push({
+        formatOp,
+        label,
+        tokenSource: formatOp === FORMAT_OP_TOKEN_AMOUNT ? readTokenSource(pool, paramOff) : null
+      })
+    }
+    formats.push({ selector, typeHash, fields })
+  }
+  if (p > table.length) throw new Error('erc7730 IR: format table overrun')
+  return { contextKind, chainId, contract, formats }
+}
+
+const sameSelector = (a: Uint8Array, b: Uint8Array): boolean =>
+  a[0] === b[0] && a[1] === b[1] && a[2] === b[2] && a[3] === b[3]
+
+/** The format for calldata selector / EIP-712 type-hash prefix `selector`,
+ *  or undefined when the descriptor has none (the device would refuse the
+ *  descriptor's binding for that call). */
+export function findIrFormat(view: Erc7730IrView, selector: Uint8Array): IrFormat | undefined {
+  if (selector.length < SELECTOR_LEN) return undefined
+  return view.formats.find((f) => sameSelector(f.selector, selector))
+}
+
+/** A canonical ABI address word: 12 zero bytes, then the address. */
+function addressFromWord(data: Uint8Array, offset: number): Uint8Array | null {
+  if (offset + ABI_WORD_LEN > data.length) return null
+  for (let i = 0; i < ABI_WORD_LEN - ADDRESS_LEN; i++) if (data[offset + i] !== 0) return null
+  return data.slice(offset + ABI_WORD_LEN - ADDRESS_LEN, offset + ABI_WORD_LEN)
+}
+
+/** Token addresses the `tokenAmount` fields of `format` resolve to for this
+ *  call, in field order, without duplicates. Sources this reader doesn't
+ *  model are skipped. */
+export function tokenAmountAddresses(
+  format: IrFormat,
+  call: { to: Uint8Array; data: Uint8Array }
+): Uint8Array[] {
+  const out: Uint8Array[] = []
+  const push = (addr: Uint8Array | null) => {
+    if (!addr || addr.length !== ADDRESS_LEN) return
+    if (out.some((a) => a.every((byte, i) => byte === addr[i]))) return
+    out.push(addr)
+  }
+  for (const field of format.fields) {
+    const source = field.tokenSource
+    if (!source) continue
+    if (source.kind === 'constant') push(source.address)
+    if (source.kind === 'callTarget') push(call.to)
+    if (source.kind === 'calldataWord') {
+      push(addressFromWord(call.data, SELECTOR_LEN + source.slot * ABI_WORD_LEN))
+    }
+  }
+  return out
+}

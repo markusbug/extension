@@ -53,9 +53,21 @@ import { fitFeesForDeviceDisplay } from './feeDisplay'
 import { BundlerClient, type StateOverride } from './bundler'
 import { applyEstimate, buildUserOp, finalize, forEstimate } from './userop'
 import { isCowSetPreSignature, tryBuildV3Trailer } from '../cowswap/v3Trailer'
-import { resolveErc20Bundle } from '../erc20/detect'
+import { reportClearSigningFallback } from '../db/common'
+import {
+  buildErc20BundleFor,
+  firstKnownErc20Bundle,
+  resolveErc20Bundle,
+  resolveSafeTxErc20Token,
+  type SafeTxInnerCall
+} from '../erc20/detect'
+import { isErc20MethodCall } from '../erc20/selectors'
 import { buildErc7730BundleForCall } from '../erc7730/lookup'
-import { buildNameBundles, collectDisplayAddresses } from '../names/resolve'
+import {
+  buildNameBundles,
+  collectDisplayAddresses,
+  collectSafeTxDisplayAddresses
+} from '../names/resolve'
 import {
   decodeExecTransaction,
   isSafeExecTransaction,
@@ -63,6 +75,7 @@ import {
 } from '../safe/execCalldata'
 import { assertSafeOperationSignable, resolveSafeCowBinding } from '../safe/multiSend'
 import { isSafeApproveHash, tryBuildSafeV1Trailer } from '../safe/safeV1Trailer'
+import { loadSelectorsDb } from '../selectors/db'
 
 type Call = { to: `0x${string}`; value: bigint; data: `0x${string}` }
 
@@ -436,6 +449,7 @@ export async function pq1BroadcastAccountOp(
         zkV3Bundle: perCallTrailers[0]!.zkV3Bundle,
         safeV1Bundle: perCallTrailers[0]!.safeV1Bundle,
         erc7730Bundle: perCallTrailers[0]!.erc7730Bundle,
+        selectorBundle: perCallTrailers[0]!.selectorBundle,
         nameBundles
       })
     : await params.device.signUserOpBatch({
@@ -457,7 +471,8 @@ export async function pq1BroadcastAccountOp(
           erc20Bundle: perCallTrailers[i]!.erc20Bundle,
           zkV3Bundle: perCallTrailers[i]!.zkV3Bundle,
           safeV1Bundle: perCallTrailers[i]!.safeV1Bundle,
-          erc7730Bundle: perCallTrailers[i]!.erc7730Bundle
+          erc7730Bundle: perCallTrailers[i]!.erc7730Bundle,
+          selectorBundle: perCallTrailers[i]!.selectorBundle
         })),
         nameBundles
       })
@@ -491,14 +506,63 @@ export async function pq1BroadcastAccountOp(
 }
 
 /** Clear-signing data attached to one inner call: the kind-1 ERC-20 bundle
- *  plus whichever CoW / Safe / ERC-7730 trailers its routing selects. */
+ *  plus whichever CoW / Safe / ERC-7730 trailers its routing selects, or —
+ *  for a call with none of those — the curated selector bundle that names
+ *  the function on the blind-sign pages. */
 export type PerCallTrailers = {
   erc20Bundle?: Uint8Array
   zkV3Bundle?: Uint8Array
   safeV1Bundle?: Uint8Array
   erc7730Bundle?: Uint8Array
+  selectorBundle?: Uint8Array
 }
-type ClearSignTrailers = Omit<PerCallTrailers, 'erc20Bundle'> & { cowReceiver?: string }
+type ClearSignTrailers = Omit<PerCallTrailers, 'erc20Bundle' | 'selectorBundle'> & {
+  cowReceiver?: string
+  /** The verified SafeTx inner call behind an approveHash. */
+  safeInner?: SafeTxInnerCall
+  /** Tokens the attached ERC-7730 descriptor's amounts resolve to. */
+  erc7730TokenAddresses?: Uint8Array[]
+}
+
+/** True when the device renders this call through a decoder of its own —
+ *  ERC-20, Safe, CoW or an ERC-7730 descriptor. Only the remaining calls
+ *  reach the blind-sign pages, where a curated selector bundle names the
+ *  function. */
+function hasClearSignRoute(
+  innerData: Uint8Array,
+  clearSign: ClearSignTrailers,
+  erc20Bundle: Uint8Array | undefined
+): boolean {
+  return (
+    erc20Bundle !== undefined ||
+    clearSign.erc7730Bundle !== undefined ||
+    clearSign.zkV3Bundle !== undefined ||
+    clearSign.safeV1Bundle !== undefined ||
+    isErc20MethodCall(innerData) ||
+    isSafeExecTransaction(innerData)
+  )
+}
+
+/** The curated selector bundle for `innerData`, or undefined on a miss or a
+ *  DB failure (the device then shows the raw selector). Never throws. */
+async function buildSelectorBundle(innerData: Uint8Array): Promise<Uint8Array | undefined> {
+  try {
+    const db = await loadSelectorsDb()
+    return db.buildBundle(innerData) ?? undefined
+  } catch (e) {
+    reportClearSigningFallback('selector bundle lookup failed; showing the raw selector', e)
+    return undefined
+  }
+}
+
+/** The kind-1 bundle for the token a SafeTx inner call moves, if any. */
+async function resolveSafeTxErc20Bundle(
+  chainId: number,
+  inner: SafeTxInnerCall
+): Promise<Uint8Array | undefined> {
+  const token = resolveSafeTxErc20Token(inner)
+  return token ? buildErc20BundleFor(chainId, token) : undefined
+}
 
 const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 
@@ -520,7 +584,8 @@ const errorText = (e: unknown): string => (e instanceof Error ? e.message : Stri
  * trailers are firmware downgrade-mitigation gates: refuse-to-sign if the
  * bundle is missing, so a failure to build one throws a `Pq1UserError`.
  * ERC-7730 lookup misses are silent; the firmware blind-signs calls without
- * a matching trailer.
+ * a matching trailer (with the curated selector bundle naming the function),
+ * or refuses a call its known-call filter says needs one.
  */
 export async function buildCallTrailers(args: {
   chainId: number
@@ -539,21 +604,36 @@ export async function buildCallTrailers(args: {
       // the approve) and the kind-3 CoW trailer (for the order). Resolve it
       // once and merge with whatever the CoW/Safe/erc7730 routing produces;
       // a miss / DB-load failure degrades safely to the unknown-token page.
-      const erc20Bundle = await resolveErc20Bundle(chainId, c.to, innerData)
       const clearSign = await resolveClearSignTrailers(chainId, args.sender, c.to, innerData)
+      // An approveHash names its SafeTx only through the fetched Safe
+      // Transaction Service entry (the calldata carries just the hash), and
+      // an ERC-7730 descriptor may take its amount's token from a constant
+      // or an argument rather than from `to` — so both feed the lookup too.
+      const erc20Bundle =
+        (await resolveErc20Bundle(chainId, c.to, innerData)) ??
+        (clearSign.safeInner
+          ? await resolveSafeTxErc20Bundle(chainId, clearSign.safeInner)
+          : undefined) ??
+        (await firstKnownErc20Bundle(chainId, clearSign.erc7730TokenAddresses ?? []))
+      const selectorBundle = hasClearSignRoute(innerData, clearSign, erc20Bundle)
+        ? undefined
+        : await buildSelectorBundle(innerData)
 
       // Names (kind 8): every address the device will display for this call
-      // — `to`, ERC-20 args, Safe / multiSend targets, plus the CoW order
-      // receiver when this is a presign. Collected here; deduped and capped
-      // at MAX_NAME_BUNDLES across the whole sign below.
+      // — `to`, ERC-20 args, Safe / multiSend targets (an approveHash's
+      // included), plus the CoW order receiver when this is a presign.
+      // Collected here; deduped and capped at MAX_NAME_BUNDLES across the
+      // whole sign below.
       const nameAddrs = collectDisplayAddresses(c.to, innerData)
+      if (clearSign.safeInner) nameAddrs.push(...collectSafeTxDisplayAddresses(clearSign.safeInner))
       if (clearSign.cowReceiver) nameAddrs.push(hexToBytes(clearSign.cowReceiver))
 
       const trailers: PerCallTrailers = {
         erc20Bundle,
         zkV3Bundle: clearSign.zkV3Bundle,
         safeV1Bundle: clearSign.safeV1Bundle,
-        erc7730Bundle: clearSign.erc7730Bundle
+        erc7730Bundle: clearSign.erc7730Bundle,
+        selectorBundle
       }
       return { trailers, nameAddrs }
     })
@@ -580,8 +660,9 @@ async function resolveClearSignTrailers(
   }
   if (isSafeApproveHash(to, innerData)) return resolveSafeApproveHash(chainId, to, innerData)
   if (isSafeExecTransaction(innerData)) return resolveSafeExecTransaction(chainId, to, innerData)
-  const erc7730Bundle = (await buildErc7730BundleForCall({ chainId, to })) ?? undefined
-  return { erc7730Bundle }
+  const erc7730 = await buildErc7730BundleForCall({ chainId, to, data: innerData })
+  if (!erc7730) return {}
+  return { erc7730Bundle: erc7730.bundle, erc7730TokenAddresses: erc7730.tokenAddresses }
 }
 
 /** The CoW v3 trailer for a presign the device refuses to sign without it.
@@ -646,18 +727,26 @@ async function resolveSafeApproveHash(
   // its `refuse` case is unreachable here — tryBuildSafeV1Trailer
   // already threw on a multiSend hard-rule violation.
   const safeTxData = hexToBytes(built.fields.data)
+  // The SafeTx the device will re-derive from the trailer and show: its
+  // token and addresses get metadata like a direct call's would.
+  const safeInner: SafeTxInnerCall = {
+    operation: built.fields.operation,
+    to: built.fields.to,
+    data: safeTxData
+  }
   const binding = resolveSafeCowBinding(
     built.fields.operation,
     built.fields.to.toLowerCase(),
     safeTxData
   )
   if (binding.kind === 'refuse') throw safeMultiSendRefusal(binding.banner)
-  if (binding.kind !== 'bind') return { safeV1Bundle: built.safeV1Bundle }
+  if (binding.kind !== 'bind') return { safeV1Bundle: built.safeV1Bundle, safeInner }
   const v3 = await requireCowV3Trailer(chainId, safe, binding.calldata, 'Safe-wrapped CoW')
   return {
     zkV3Bundle: v3.zkV3Bundle,
     safeV1Bundle: built.safeV1Bundle,
-    cowReceiver: v3.order.receiver
+    cowReceiver: v3.order.receiver,
+    safeInner
   }
 }
 

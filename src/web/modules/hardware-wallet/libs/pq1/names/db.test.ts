@@ -8,7 +8,10 @@
 import fs from 'fs'
 import path from 'path'
 
-import { hexToBytes } from '../transport/bytes'
+import { sha256 } from 'viem'
+
+import { readU32Le } from '../db/common'
+import { bytesToHex, concatBytes, hexToBytes } from '../transport/bytes'
 import { parseNamesDb } from './db'
 
 jest.mock('@common/config/analytics/CrashAnalytics.web', () => ({
@@ -44,11 +47,41 @@ const UNISWAP_V3_ROUTER_C1_REFERENCE_HEX =
   '95633753d967cee4d7329bbf8453652c1da836a5148124c1b595ba2881aa2b604e0d1bae05e2f2d9d578' +
   'dc70ee63eb8c'
 
+/** `NAMES_DB_ROOT` (not e2e) in `sphincs_rust/secure/src/db_roots.rs`. */
+const FIRMWARE_NAMES_DB_ROOT = '5320d4c40deb7aeeffd3ae9b995cc1fc1818df0341341f682f208eff5f1d6abc'
+
+/** Walk a kind-8 bundle's proof to the root (`tx/src/erc20/merkle.rs`). */
+function rootOf(bundle: Uint8Array): string {
+  const nameLen = bundle[28]!
+  const canonical = bundle.subarray(0, 29 + nameLen)
+  let p = 29 + nameLen
+  let index = readU32Le(bundle, p)
+  const depth = readU32Le(bundle, p + 4)
+  p += 8
+  let node = sha256(concatBytes([new Uint8Array([0]), canonical]), 'bytes')
+  for (let level = 0; level < depth; level++) {
+    const sibling = bundle.subarray(p + level * 32, p + level * 32 + 32)
+    const pair = index & 1 ? [sibling, node] : [node, sibling]
+    node = sha256(concatBytes([new Uint8Array([1]), ...pair]), 'bytes')
+    index >>>= 1
+  }
+  return bytesToHex(node)
+}
+
 describe('names db', () => {
   let blob: Uint8Array
 
   beforeAll(() => {
     blob = new Uint8Array(fs.readFileSync(DB_PATH))
+  })
+
+  it('proves the Seaport 1.6 name to the root the firmware pins', () => {
+    const db = parseNamesDb(blob)
+    const bundle = db.buildBundle(1, hexToBytes('0x0000000000000068F116a894984e2DB1123eB395'))!
+    expect(String.fromCharCode(...bundle.subarray(29, 29 + bundle[28]!))).toBe(
+      'OpenSea Seaport 1.6'
+    )
+    expect(rootOf(bundle)).toBe(FIRMWARE_NAMES_DB_ROOT)
   })
 
   it('parses the header (331 names, proof depth 9)', () => {

@@ -13,6 +13,7 @@
 // stop once the cap is hit.
 
 import { reportClearSigningFallback } from '../db/common'
+import type { SafeTxInnerCall } from '../erc20/detect'
 import {
   ERC20_APPROVE_SELECTOR,
   ERC20_TRANSFER_FROM_SELECTOR,
@@ -54,32 +55,29 @@ function erc20ArgAddresses(data: Uint8Array): Uint8Array[] {
   return out
 }
 
+/** The addresses the trusted UI shows for a SafeTx inner call: its `to` and
+ *  ERC-20 args (operation 0), or each MultiSendCallOnly record target plus
+ *  that record's ERC-20 args (operation 1). */
+export function collectSafeTxDisplayAddresses(inner: SafeTxInnerCall): Uint8Array[] {
+  if (inner.operation === 0) {
+    return [hexToBytes(inner.to), ...erc20ArgAddresses(inner.data)]
+  }
+  const summary = summarizeMultiSend(inner.data)
+  if (typeof summary === 'string') return []
+  return summary.records.flatMap((rec) => [hexToBytes(rec.to), ...erc20ArgAddresses(rec.data)])
+}
+
 /** Every address the trusted UI will display for this inner call: the call
  *  `to`, its ERC-20 args, and — for a Safe execTransaction — the SafeTx
  *  inner `to` / each multiSend record target plus their ERC-20 args. CoW
- *  receivers are added separately by the caller (they come from the fetched
- *  order, not the calldata). Returned as raw 20-byte addresses; the caller
- *  dedupes. */
+ *  receivers and an approveHash's SafeTx are added separately by the caller
+ *  (they come from fetched data, not the calldata). Returned as raw 20-byte
+ *  addresses; the caller dedupes. */
 export function collectDisplayAddresses(to: `0x${string}`, data: Uint8Array): Uint8Array[] {
   const out: Uint8Array[] = [hexToBytes(to), ...erc20ArgAddresses(data)]
-
-  if (isSafeExecTransaction(data)) {
-    const exec = decodeExecTransaction(data)
-    if (exec) {
-      if (exec.operation === 0) {
-        out.push(hexToBytes(exec.to), ...erc20ArgAddresses(exec.data))
-      } else {
-        const summary = summarizeMultiSend(exec.data)
-        if (typeof summary !== 'string') {
-          for (const rec of summary.records) {
-            out.push(hexToBytes(rec.to), ...erc20ArgAddresses(rec.data))
-          }
-        }
-      }
-    }
-  }
-
-  return out
+  if (!isSafeExecTransaction(data)) return out
+  const exec = decodeExecTransaction(data)
+  return exec ? [...out, ...collectSafeTxDisplayAddresses(exec)] : out
 }
 
 const ZERO_ADDRESS_KEY = '0'.repeat(40)

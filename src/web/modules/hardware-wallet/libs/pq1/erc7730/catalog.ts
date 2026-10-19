@@ -31,6 +31,7 @@ import {
   readU64Le,
   type DbHeader
 } from '../db/common'
+import { findIrFormat, parseErc7730Ir, type Erc7730IrView } from './ir'
 
 const CATALOG_URL = 'pq1/erc7730_db.bin'
 
@@ -110,7 +111,41 @@ class Catalog {
         firstMatch = e
       }
     }
+    if (primaryTypeHash4 && contextKind === CTX_EIP712) {
+      return this.#findByIrFormat(cid, contract, primaryTypeHash4)
+    }
     return firstMatch
+  }
+
+  /** One EIP-712 leaf can carry several primary types (Permit2 holds
+   *  PermitBatch, PermitSingle and PermitTransferFrom), but its catalog row
+   *  records only the first. The firmware matches the requested type
+   *  against every format in the IR, so fall back to the same check. */
+  #findByIrFormat(
+    chainId: bigint,
+    contract: Uint8Array,
+    primaryTypeHash4: Uint8Array
+  ): CatalogEntry | null {
+    for (const e of this.entries) {
+      if (e.contextKind !== CTX_EIP712 || e.chainId !== chainId) continue
+      if (!isSameBytes(e.contract, contract)) continue
+      const view = this.parseIr(e)
+      if (view && findIrFormat(view, primaryTypeHash4)) return e
+    }
+    return null
+  }
+
+  /** The compiled IR of `entry`, parsed for routing decisions, or null if
+   *  this reader can't walk it (the device decides about such a leaf). */
+  parseIr(entry: CatalogEntry): Erc7730IrView | null {
+    const irStart = this.header.poolOff + entry.irOff
+    if (irStart + entry.irLen > this.blob.length) return null
+    try {
+      return parseErc7730Ir(this.blob.subarray(irStart, irStart + entry.irLen))
+    } catch (e) {
+      console.warn(`[pq1] erc7730 catalog: leaf ${entry.leafIndex} IR is unreadable`, e)
+      return null
+    }
   }
 
   /** Build the `[ir_len BE u16][ir][leaf_index BE u32][proof_depth BE u32][proof]`
