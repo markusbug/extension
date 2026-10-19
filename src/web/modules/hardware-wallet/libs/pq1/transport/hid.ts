@@ -30,7 +30,9 @@ export type ApduResponse = { sw: number; data: Uint8Array }
  *    the user ignored an on-device prompt.
  *  - 'refused' — the unlocked device refused the command (first-time setup
  *    still running, or a firmware policy check); the device screen says why.
- *  - 'outdated' — the firmware is too old for the requested command. */
+ *  - 'outdated' — the firmware is too old for the requested command.
+ *  - 'sign-refused' — the device refused to sign because it couldn't show
+ *    the request in full; its screen names the reason. Never retried. */
 export type DeviceErrorCode =
   | 'disconnected'
   | 'locked'
@@ -38,6 +40,7 @@ export type DeviceErrorCode =
   | 'timeout'
   | 'refused'
   | 'outdated'
+  | 'sign-refused'
 
 export class DeviceError extends Error {
   sw?: number

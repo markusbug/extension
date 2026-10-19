@@ -11,6 +11,7 @@ import {
   INS_GET_WALLET_ADDRESS,
   PQ_INIT_CODE_LEN,
   SW_CONDITIONS_NOT_SATISFIED,
+  SW_INTERNAL_ERROR,
   SW_OK
 } from '../config'
 import { DeviceCommands } from './commands'
@@ -87,6 +88,28 @@ describe('DeviceCommands lock detection on 0x6985', () => {
     expect(err).toBeInstanceOf(DeviceError)
     expect(err.code).toBe('refused')
     expect(err.message).toContain('first-time setup')
+  })
+})
+
+describe('DeviceCommands sign refusals on 0x6F00', () => {
+  it('reports a device-side refusal to sign, not a transport failure', async () => {
+    const transport = {
+      sendChainedApdu: async () => ({ sw: SW_INTERNAL_ERROR, data: new Uint8Array() })
+    } as unknown as HidTransport
+    const commands = new DeviceCommands(transport)
+    const err = await commands
+      .signOffchain({
+        kind: 'raw32',
+        digest: new Uint8Array(32),
+        accountIndex: 0,
+        chainId: 1,
+        slotIndex: 0,
+        accountDeployed: true
+      })
+      .catch((e) => e)
+    expect(err).toBeInstanceOf(DeviceError)
+    expect(err.code).toBe('sign-refused')
+    expect(err.sw).toBe(SW_INTERNAL_ERROR)
   })
 })
 

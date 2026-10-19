@@ -29,7 +29,9 @@ const DEVICE_ERROR_MESSAGES: Record<DeviceErrorCode, string> = {
   timeout: "The PQ1 didn't respond in time. Check the device screen, then try again.",
   refused:
     "The PQ1 refused this request. If it's showing its first-time setup, finish that first. Otherwise, check the device screen for the reason.",
-  outdated: 'This needs a newer version of the PQ1 software. Update your PQ1 and try again.'
+  outdated: 'This needs a newer version of the PQ1 software. Update your PQ1 and try again.',
+  'sign-refused':
+    "The PQ1 refused to sign this because it couldn't show you every detail of it. Its screen says why. Nothing was signed or sent."
 }
 
 /** Shown when a PQ1 action is requested on a network without the PQ1

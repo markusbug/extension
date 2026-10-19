@@ -16,6 +16,7 @@ import {
   PQ_INIT_CODE_LEN,
   SW_CONDITIONS_NOT_SATISFIED,
   SW_INS_NOT_SUPPORTED,
+  SW_INTERNAL_ERROR,
   SW_OK,
   SW_SECURITY_CONDITION,
   SW_SESSION_EXPIRED
@@ -201,7 +202,7 @@ export class DeviceCommands {
     const payload = buildSignPayload(params)
     return this.withLockDetection(async () => {
       const r = await this.t.sendChainedApdu(INS_SIGN_USEROP, payload)
-      expectOk(r.sw, 'SIGN_USEROP')
+      expectSignOk(r.sw, 'SIGN_USEROP')
       return parseSignResponse(r.data)
     })
   }
@@ -226,7 +227,7 @@ export class DeviceCommands {
     const payload = buildSignBatchPayload(params)
     return this.withLockDetection(async () => {
       const r = await this.t.sendChainedApdu(INS_SIGN_USEROP_BATCH, payload)
-      expectOk(r.sw, 'SIGN_USEROP_BATCH')
+      expectSignOk(r.sw, 'SIGN_USEROP_BATCH')
       return parseSignResponse(r.data)
     })
   }
@@ -235,7 +236,7 @@ export class DeviceCommands {
     const payload = buildSignOffchainPayload(params)
     return this.withLockDetection(async () => {
       const r = await this.t.sendChainedApdu(INS_SIGN_OFFCHAIN, payload)
-      expectOk(r.sw, 'SIGN_OFFCHAIN')
+      expectSignOk(r.sw, 'SIGN_OFFCHAIN')
       return parseSignOffchainResponse(r.data)
     })
   }
@@ -308,4 +309,16 @@ function expectOk(sw: number, what: string): void {
     )
   }
   throw new DeviceError(`${what} failed: SW=0x${sw.toString(16).padStart(4, '0')}`, sw)
+}
+
+/** `expectOk` for the three sign commands. The firmware answers a request it
+ *  won't sign because it can't show it in full (descriptor binding, render or
+ *  page-budget gate, all fail-closed by design) with 0x6F00, after naming the
+ *  reason on its screen. Nothing was signed, and unplugging the device would
+ *  not help, so it gets its own code instead of the generic failure. */
+function expectSignOk(sw: number, what: string): void {
+  if (sw === SW_INTERNAL_ERROR) {
+    throw new DeviceError(`${what}: the PQ1 refused to sign (SW=0x6f00)`, sw, 'sign-refused')
+  }
+  expectOk(sw, what)
 }

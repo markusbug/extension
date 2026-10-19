@@ -38,6 +38,11 @@ export const SW_SECURITY_CONDITION = 0x6982
 export const SW_SESSION_EXPIRED = 0x6984
 export const SW_CONDITIONS_NOT_SATISFIED = 0x6985
 export const SW_INS_NOT_SUPPORTED = 0x6d00
+/** `NscStatus::InternalError` / `InvalidPointer`. On a sign command this is
+ *  almost always the firmware refusing to sign something it can't show in
+ *  full (descriptor binding, render or page-budget gate); the device screen
+ *  names the reason. */
+export const SW_INTERNAL_ERROR = 0x6f00
 
 // ── Flags (u32 BE in SIGN_USEROP payload) ──────────────────────────
 //   bit 31      = INCLUDE_INIT_CODE  (first deploy)
