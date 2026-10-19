@@ -206,7 +206,10 @@ const PQ1DeviceTestScreen = () => {
     onDeviceDisconnectRef.current = () => setConnection(null)
   }, [])
 
+  // Lets Run remaining see results recorded while it is looping.
+  const resultsRef = useRef(results)
   useEffect(() => {
+    resultsRef.current = results
     saveResults(results)
   }, [results])
 
@@ -258,7 +261,7 @@ const PQ1DeviceTestScreen = () => {
     setIsRunningAll(true)
     for (const scenario of SCENARIOS) {
       if (stopRequestedRef.current || !isMountedRef.current) break
-      if (scenario.spendsBootstrapKey) continue
+      if (scenario.spendsBootstrapKey || resultsRef.current[scenario.id]?.outcome) continue
 
       await run(scenario)
     }
@@ -320,7 +323,7 @@ const PQ1DeviceTestScreen = () => {
               onPress={onPressConnect}
             />
             <Button
-              text={t('Run all')}
+              text={t('Run remaining')}
               type="secondary"
               disabled={!connection || isBusy}
               hasBottomSpacing={false}
