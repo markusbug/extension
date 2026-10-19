@@ -19,6 +19,7 @@ const STATUS_LABEL: Record<ScenarioStatus, string> = {
   signed: 'signed',
   'refused-by-wallet': 'refused by wallet',
   'rejected-on-device': 'rejected on device',
+  'refused-on-device': 'refused on device',
   failed: 'FAILED'
 }
 
@@ -28,10 +29,11 @@ const COMMENT_SEPARATOR = ' — '
 const cell = (s: string) => s.split('|').join('\\|').split('\n').join(' ')
 
 /** Whether a finished run behaved as the scenario expects, before the
- *  tester's screen check: refusals must not reach the device, everything
- *  else must reach it. */
+ *  tester's screen check: host refusals must not reach the device, device
+ *  refusals must be refused there, and everything else must be signable. */
 export function behavedAsExpected(scenario: Scenario, outcome: ScenarioOutcome): boolean {
   if (scenario.expectHostRefusal) return outcome.status === 'refused-by-wallet'
+  if (scenario.expectDeviceRefusal) return outcome.status === 'refused-on-device'
   return outcome.status === 'signed' || outcome.status === 'rejected-on-device'
 }
 

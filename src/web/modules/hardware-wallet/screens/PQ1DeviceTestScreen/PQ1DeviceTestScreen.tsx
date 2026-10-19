@@ -63,6 +63,7 @@ const STATUS_APPEARANCE: Record<ScenarioStatus, TextAppearance> = {
   signed: 'successText',
   'refused-by-wallet': 'warningText',
   'rejected-on-device': 'secondaryText',
+  'refused-on-device': 'warningText',
   failed: 'errorText'
 }
 

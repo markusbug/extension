@@ -4,6 +4,7 @@
 // builders, so firmware size caps and trailer rules are checked too.
 
 import { C10_SIG_LEN, FACTORY, PQ_INIT_CODE_LEN, SIG_WRAPPER_LEN } from '../config'
+import { DeviceError } from '../transport/hid'
 import { buildSignOffchainPayload, type SignOffchainParams } from '../transport/offchain'
 import {
   buildSignBatchPayload,
@@ -38,13 +39,20 @@ function fakeInitCode(): Uint8Array {
   return initCode
 }
 
-function fakeDevice() {
+/** A fake device: builds the real wire payloads, then signs — or, for a
+ *  scenario the real device must refuse, answers the way the firmware does
+ *  (SW 0x6F00 after naming the reason on its screen). */
+function fakeDevice(refuses: boolean) {
   const sent: string[] = []
+  const refuse = () => {
+    if (refuses) throw new DeviceError('SIGN_USEROP: refused (SW=0x6f00)', 0x6f00, 'sign-refused')
+  }
   const commands = {
     getInitCode: jest.fn(async () => fakeInitCode()),
     signUserOp: jest.fn(async (p: SignRequestParams) => {
       buildSignPayload(p)
       sent.push('signUserOp')
+      refuse()
       return {
         newOffchainCount: 1n,
         initCode: p.includeInitCode ? fakeInitCode() : null,
@@ -55,6 +63,7 @@ function fakeDevice() {
     signUserOpBatch: jest.fn(async (p: BatchSignRequestParams) => {
       buildSignBatchPayload(p)
       sent.push('signUserOpBatch')
+      refuse()
       return {
         newOffchainCount: 1n,
         initCode: null,
@@ -83,7 +92,7 @@ function fakeDevice() {
 }
 
 const run = (scenario: Scenario) => {
-  const { controller, commands, sent } = fakeDevice()
+  const { controller, commands, sent } = fakeDevice(scenario.expectDeviceRefusal === true)
   return runScenario({ scenario, controller: controller as never, sender: SENDER }).then(
     (outcome) => ({ outcome, commands, sent })
   )
@@ -122,6 +131,11 @@ describe('PQ1 device harness scenarios (fake device)', () => {
       if (scenario.expectHostRefusal) {
         expect(outcome.status).toBe('refused-by-wallet')
         expect(sent).toHaveLength(0)
+        return
+      }
+      if (scenario.expectDeviceRefusal) {
+        expect(outcome.status).toBe('refused-on-device')
+        expect(sent).toHaveLength(1)
         return
       }
       expect({ status: outcome.status, message: outcome.message }).toEqual({

@@ -68,6 +68,9 @@ export type Scenario = {
   expected: string
   /** The wallet must refuse before anything reaches the device. */
   expectHostRefusal?: boolean
+  /** The request reaches the device, which must refuse to sign it (and say
+   *  why on its screen); Ambire then reports the device's refusal. */
+  expectDeviceRefusal?: boolean
   /** Spends one use of the few-time bootstrap key; never part of Run all. */
   spendsBootstrapKey?: boolean
   build: (ctx: { sender: Hex }) => ScenarioRequest
@@ -347,7 +350,7 @@ export const SCENARIOS: Scenario[] = [
     group: 'Approvals',
     title: 'Unlimited USDT approval for Uniswap V2',
     expected:
-      'Approve UNLIMITED USDT (clearly marked as unlimited), spender shown by name (Uniswap V2 router)',
+      'Approve "Unlimited USDT" (clearly marked as unlimited), spender shown by name (Uniswap V2 Router). Firmware without the Ethereum-only USDT threshold refuses with "render refused".',
     build: () => tx(ETHEREUM, [approve(USDT, UNISWAP_V2_ROUTER, maxUint256)])
   },
   {
@@ -364,8 +367,7 @@ export const SCENARIOS: Scenario[] = [
       ['lido-stake', 'Stake ETH with Lido', ERC7730_CALL_FIXTURES.lidoStake],
       ['wsteth-wrap', 'Wrap stETH into wstETH', ERC7730_CALL_FIXTURES.wstEthWrap],
       ['aave-supply', 'Supply USDC to Aave', ERC7730_CALL_FIXTURES.aaveSupply],
-      ['uniswap-swap', 'Swap on Uniswap (SwapRouter02)', ERC7730_CALL_FIXTURES.uniswapSwap],
-      ['oneinch-swap', 'Swap ETH on 1inch', ERC7730_CALL_FIXTURES.oneInchEthUnoswap]
+      ['uniswap-swap', 'Swap on Uniswap (SwapRouter02)', ERC7730_CALL_FIXTURES.uniswapSwap]
     ] as const
   ).map(
     ([id, title, fixture]): Scenario => ({
@@ -377,11 +379,29 @@ export const SCENARIOS: Scenario[] = [
     })
   ),
   {
+    id: 'oneinch-swap',
+    group: 'Contract calls',
+    title: 'Swap ETH on 1inch',
+    expected:
+      'The device refuses: the 1inch descriptor has no format for ethUnoswap, and the device knows this call needs one. Ambire says the PQ1 refused to sign. (The registry reference would show: Swap 0.002 ETH for at least 1845685323878608 of an unknown token.)',
+    expectDeviceRefusal: true,
+    build: () => tx(ETHEREUM, [fixtureCall(ERC7730_CALL_FIXTURES.oneInchEthUnoswap)])
+  },
+  {
+    id: 'weth-wrap-trailing-byte',
+    group: 'Contract calls',
+    title: 'Wrap ETH with a stray byte after the call (upstream reference calldata)',
+    expected:
+      'The device refuses: one byte after deposit() would be signed but never shown. Ambire says the PQ1 refused to sign.',
+    expectDeviceRefusal: true,
+    build: () => tx(ETHEREUM, [fixtureCall(ERC7730_CALL_FIXTURES.wethWrapTrailingByte)])
+  },
+  {
     id: 'nft-transfer',
     group: 'Contract calls',
     title: 'Transfer an NFT (no descriptor)',
     expected:
-      'Blind-sign warning: contract 0xBC4C…f13D and a data fingerprint, no readable details',
+      'Blind-sign warning for contract 0xBC4C…f13D, with the function named safeTransferFrom(address,address,uint256), its arguments decoded, and a data fingerprint',
     build: ({ sender }) =>
       tx(ETHEREUM, [
         {
@@ -399,7 +419,8 @@ export const SCENARIOS: Scenario[] = [
     id: 'named-contract-blind',
     group: 'Contract calls',
     title: 'Call a known contract without a descriptor (Seaport)',
-    expected: 'Blind-sign warning, but the contract is shown by name (Seaport)',
+    expected:
+      'Blind-sign warning, but the contract is shown by name (OpenSea Seaport 1.6); the function is shown only as its raw selector (not in the curated list)',
     build: () =>
       tx(ETHEREUM, [
         {
@@ -497,7 +518,8 @@ export const SCENARIOS: Scenario[] = [
     id: 'safe-approve-hash',
     group: 'Safe',
     title: 'Approve a Safe transaction (approveHash)',
-    expected: 'Safe confirmation: Safe 0x5afe…5afe sends 100 USDC to 0x1234…5678 (nonce 3)',
+    expected:
+      'Safe confirmation: Safe 0x5afe…5afe sends 100 USDC (token named, not "unknown token") to 0x1234…5678 (nonce 3)',
     build: () => {
       const safe = safeApproveHash()
       return tx(ETHEREUM, [safe.call], { fixtures: { safeTxs: new Map([[safe.hash, safe.api]]) } })
@@ -572,7 +594,7 @@ export const SCENARIOS: Scenario[] = [
     id: 'msg-text',
     group: 'Messages',
     title: 'Sign a short text message',
-    expected: 'The text "Hello from the PQ1 device test" in full',
+    expected: 'The text "Hello from the PQ1 device test" in full, before the first Confirm?',
     build: () => ({
       kind: 'message',
       chainId: ETHEREUM,
@@ -584,7 +606,7 @@ export const SCENARIOS: Scenario[] = [
     group: 'Messages',
     title: 'Sign in with Ethereum (SIWE)',
     expected:
-      'The full sign-in message: domain app.example.com, your address, nonce, issued-at time',
+      'The full sign-in message with its line breaks (domain app.example.com, your address, nonce, issued-at time), all before the first Confirm?',
     build: ({ sender }) => ({
       kind: 'message',
       chainId: ETHEREUM,
@@ -608,14 +630,16 @@ export const SCENARIOS: Scenario[] = [
     id: 'msg-binary',
     group: 'Messages',
     title: 'Sign raw bytes that are not text',
-    expected: 'A hex view or fingerprint of the bytes — never garbled text',
+    expected:
+      'A "! NOT TEXT" warning, then the bytes as hex (deadbeef 00ff10e2 c3a4b5c6), before the first Confirm? — never garbled text',
     build: () => ({ kind: 'message', chainId: ETHEREUM, message: '0xdeadbeef00ff10e2c3a4b5c6' })
   },
   {
     id: 'msg-long',
     group: 'Messages',
     title: 'Sign a message longer than the device can show',
-    expected: 'Fingerprint (digest) only, clearly labelled as such',
+    expected:
+      'BLIND HASH: the message digest only, clearly labelled as such, shown before the first Confirm?',
     build: () => ({ kind: 'message', chainId: ETHEREUM, message: stringToHex(LONG_MESSAGE) })
   },
   {
@@ -645,7 +669,8 @@ export const SCENARIOS: Scenario[] = [
     id: 'typed-usdc-permit',
     group: 'Messages',
     title: 'USDC permit (EIP-2612)',
-    expected: 'Typed-data fingerprint (no descriptor for this contract)',
+    expected:
+      'BLIND HASH (no on-device route for this typed data): "! BLIND RAW32" warning and the full hash, before the first Confirm?',
     build: ({ sender }) => ({
       kind: 'typedData',
       chainId: ETHEREUM,
@@ -669,7 +694,8 @@ export const SCENARIOS: Scenario[] = [
     id: 'typed-permit2',
     group: 'Messages',
     title: 'Permit2 single-token permit',
-    expected: 'Typed-data fingerprint (nested fields are signed as a fingerprint)',
+    expected:
+      'BLIND HASH (no on-device route: Ambire cannot send nested typed data yet): "! BLIND RAW32" warning and the full hash, before the first Confirm?',
     build: () => ({
       kind: 'typedData',
       chainId: ETHEREUM,
@@ -701,7 +727,10 @@ export const SCENARIOS: Scenario[] = [
     id: 'typed-cow-order',
     group: 'Messages',
     title: 'CoW Swap order signed by an app (EIP-712)',
-    expected: 'Typed-data fingerprint',
+    // TODO(C7): becomes a clear-signed order once Ambire sends the off-chain
+    // CoW order kind (firmware SIGN_OFFCHAIN kind 5).
+    expected:
+      'BLIND HASH for now: "! BLIND RAW32" warning and the full hash, before the first Confirm?',
     build: ({ sender }) => ({
       kind: 'typedData',
       chainId: ETHEREUM,
@@ -750,7 +779,10 @@ export const SCENARIOS: Scenario[] = [
     id: 'typed-safe-tx',
     group: 'Messages',
     title: 'Safe transaction signed off-chain (SafeTx)',
-    expected: 'Typed-data fingerprint',
+    // TODO(C7): becomes a clear-signed Safe transaction once Ambire sends the
+    // off-chain SafeTx kind (firmware SIGN_OFFCHAIN kind 4).
+    expected:
+      'BLIND HASH for now: "! BLIND RAW32" warning and the full hash, before the first Confirm?',
     build: () => ({
       kind: 'typedData',
       chainId: ETHEREUM,
@@ -790,7 +822,8 @@ export const SCENARIOS: Scenario[] = [
     id: 'typed-unknown',
     group: 'Messages',
     title: 'Typed data from an unknown app',
-    expected: 'Typed-data fingerprint',
+    expected:
+      'BLIND HASH (no on-device route for this typed data): "! BLIND RAW32" warning and the full hash, before the first Confirm?',
     build: () => ({
       kind: 'typedData',
       chainId: ETHEREUM,

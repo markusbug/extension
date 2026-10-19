@@ -30,8 +30,19 @@ const DEFAULT_PRIORITY_FEE_PER_GAS = 100_000_000n // 0.1 gwei
 const REJECTED_ON_DEVICE_MESSAGE = toUserFacingPq1Error(
   new DeviceError('rejected', undefined, 'rejected')
 ).message
+const REFUSED_ON_DEVICE_MESSAGE = toUserFacingPq1Error(
+  new DeviceError('refused', undefined, 'sign-refused')
+).message
 
-export type ScenarioStatus = 'signed' | 'refused-by-wallet' | 'rejected-on-device' | 'failed'
+/** `rejected-on-device`: the tester declined on the device.
+ *  `refused-on-device`: the device itself refused to sign (it couldn't show
+ *  the request in full) and said why on its screen. */
+export type ScenarioStatus =
+  | 'signed'
+  | 'refused-by-wallet'
+  | 'rejected-on-device'
+  | 'refused-on-device'
+  | 'failed'
 
 export type ScenarioOutcome = {
   status: ScenarioStatus
@@ -191,6 +202,7 @@ export async function runScenario(args: {
     let status: ScenarioStatus = 'failed'
     if (!reachedDevice) status = 'refused-by-wallet'
     else if (message === REJECTED_ON_DEVICE_MESSAGE) status = 'rejected-on-device'
+    else if (message === REFUSED_ON_DEVICE_MESSAGE) status = 'refused-on-device'
     return { status, reachedDevice, message, deviceDetail, durationMs: Date.now() - startedAt }
   } finally {
     restoreDevice()
