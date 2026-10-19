@@ -130,6 +130,10 @@ const MainRoutes = () => {
               element={<AuthGroupScreen pick={(m) => m.PQ1ConnectScreen} />}
             />
             <Route
+              path={WEB_ROUTES.pq1DeviceTest}
+              element={<AuthGroupScreen pick={(m) => m.PQ1DeviceTestScreen} />}
+            />
+            <Route
               path={WEB_ROUTES.importPrivateKey}
               element={<AuthGroupScreen pick={(m) => m.PrivateKeyImportScreen} />}
             />

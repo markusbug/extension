@@ -24,6 +24,7 @@ const COMMON_ROUTES = {
   safeImportByOwner: 'safe-import-by-owner',
   qrConnect: 'qr-connect',
   pq1Connect: 'pq1-connect',
+  pq1DeviceTest: 'pq1-device-test',
   transfer: 'transfer',
   topUpGasTank: 'top-up-gas-tank',
   tokenDetails: 'token-details',
