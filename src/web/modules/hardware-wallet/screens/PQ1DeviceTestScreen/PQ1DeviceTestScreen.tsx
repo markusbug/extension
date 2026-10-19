@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ScrollView, View } from 'react-native'
 
 import Button from '@common/components/Button'
+import Input from '@common/components/Input'
 import Panel from '@common/components/Panel'
 import Text, { type TextAppearance } from '@common/components/Text'
 import { useTranslation } from '@common/config/localization'
@@ -18,6 +19,7 @@ import PQ1Controller from '@web/modules/hardware-wallet/controllers/PQ1Controlle
 import {
   behavedAsExpected,
   buildReport,
+  parseReport,
   type ScenarioResult,
   type ScreenVerdict
 } from '@web/modules/hardware-wallet/libs/pq1/deviceHarness/report'
@@ -30,9 +32,32 @@ import {
   type Scenario,
   SCENARIOS
 } from '@web/modules/hardware-wallet/libs/pq1/deviceHarness/scenarios'
+import { SEED_REPORT } from '@web/modules/hardware-wallet/libs/pq1/deviceHarness/seedReport'
 import { toUserFacingPq1Error } from '@web/modules/hardware-wallet/libs/pq1/errors'
 
-type Connection = { sender: `0x${string}`; protocol: string }
+type Connection = { sender: `0x${string}`; protocol: string; deviceId: string }
+
+/** Results survive page reloads and extension rebuilds (same extension
+ *  origin) so a long on-device run is never lost. */
+const RESULTS_STORAGE_KEY = 'pq1DeviceTestResults.v1'
+
+function loadResults(): Record<string, ScenarioResult> {
+  try {
+    const saved = localStorage.getItem(RESULTS_STORAGE_KEY)
+    if (saved) return JSON.parse(saved) as Record<string, ScenarioResult>
+  } catch (e) {
+    console.warn('[pq1 harness] reading saved results failed', e)
+  }
+  return parseReport(SEED_REPORT, SCENARIOS)
+}
+
+function saveResults(results: Record<string, ScenarioResult>) {
+  try {
+    localStorage.setItem(RESULTS_STORAGE_KEY, JSON.stringify(results))
+  } catch (e) {
+    console.warn('[pq1 harness] saving results failed', e)
+  }
+}
 
 const STATUS_APPEARANCE: Record<ScenarioStatus, TextAppearance> = {
   signed: 'successText',
@@ -49,6 +74,7 @@ type ScenarioRowProps = {
   isConnected: boolean
   onRun: (scenario: Scenario) => void
   onVerdict: (id: string, verdict: ScreenVerdict) => void
+  onComment: (id: string, comment: string) => void
 }
 
 const ScenarioRow = React.memo(function ScenarioRow({
@@ -58,7 +84,8 @@ const ScenarioRow = React.memo(function ScenarioRow({
   isBusy,
   isConnected,
   onRun,
-  onVerdict
+  onVerdict,
+  onComment
 }: ScenarioRowProps) {
   const { t } = useTranslation()
   const { theme } = useTheme()
@@ -68,6 +95,10 @@ const ScenarioRow = React.memo(function ScenarioRow({
     [onVerdict, scenario.id]
   )
   const onPressWrong = useCallback(() => onVerdict(scenario.id, 'wrong'), [onVerdict, scenario.id])
+  const onChangeComment = useCallback(
+    (text: string) => onComment(scenario.id, text),
+    [onComment, scenario.id]
+  )
   const outcome = result?.outcome
   const canJudgeScreen = !!outcome?.reachedDevice
 
@@ -130,6 +161,15 @@ const ScenarioRow = React.memo(function ScenarioRow({
               />
             </View>
           )}
+          {canJudgeScreen && result?.verdict === 'wrong' && (
+            <Input
+              value={result.comment ?? ''}
+              onChangeText={onChangeComment}
+              placeholder={t('What was wrong on the device screen?')}
+              multiline
+              containerStyle={spacings.mtTy}
+            />
+          )}
         </View>
       )}
     </View>
@@ -158,13 +198,17 @@ const PQ1DeviceTestScreen = () => {
   const [isConnecting, setIsConnecting] = useState(false)
   const [runningId, setRunningId] = useState<string | null>(null)
   const [isRunningAll, setIsRunningAll] = useState(false)
-  const [results, setResults] = useState<Record<string, ScenarioResult>>({})
+  const [results, setResults] = useState<Record<string, ScenarioResult>>(loadResults)
   const isMountedRef = useRef(true)
   const stopRequestedRef = useRef(false)
 
   useEffect(() => {
     onDeviceDisconnectRef.current = () => setConnection(null)
   }, [])
+
+  useEffect(() => {
+    saveResults(results)
+  }, [results])
 
   useEffect(() => {
     isMountedRef.current = true
@@ -184,7 +228,9 @@ const PQ1DeviceTestScreen = () => {
       if (!commands) throw new Error('PQ1 walletSDK missing right after unlock()')
       const sender = await commands.getWalletAddress(HARNESS_ACCOUNT_INDEX)
       const protocol = `0x${(await commands.getProtocolVersion()).toString(16).padStart(4, '0')}`
-      if (isMountedRef.current) setConnection({ sender, protocol })
+      if (isMountedRef.current) {
+        setConnection({ sender, protocol, deviceId: controller.deviceId })
+      }
     } catch (e) {
       if (!isMountedRef.current) return
       addToast(t(toUserFacingPq1Error(e).message), { type: 'error' })
@@ -227,11 +273,16 @@ const PQ1DeviceTestScreen = () => {
     setResults((prev) => ({ ...prev, [id]: { ...prev[id], verdict } }))
   }, [])
 
+  const onComment = useCallback((id: string, comment: string) => {
+    setResults((prev) => ({ ...prev, [id]: { ...prev[id], comment } }))
+  }, [])
+
   const onPressCopyReport = useCallback(async () => {
     const report = buildReport({
       scenarios: SCENARIOS,
       results,
-      deviceId: controller.deviceId,
+      // Captured at connect: an unplug resets the controller's deviceId.
+      deviceId: connection?.deviceId || controller.deviceId,
       firmwareProtocol: connection?.protocol
     })
     try {
@@ -308,6 +359,7 @@ const PQ1DeviceTestScreen = () => {
                   isConnected={!!connection}
                   onRun={onRun}
                   onVerdict={onVerdict}
+                  onComment={onComment}
                 />
               </View>
             ))}
